@@ -1,13 +1,18 @@
 import click
 import yaml
 from fspathtree import fspathtree
-import os, stat, shutil
+
+import os
+import stat
+import shutil
 import platform
 import logging
 import itertools
 from pathlib import Path
 import subprocess
 import locale
+import importlib.util
+import inspect
 
 locale.setlocale(locale.LC_ALL,'')
 encoding = locale.getpreferredencoding()
@@ -287,6 +292,42 @@ def make_conan_editable_package(ctx,conan_package_reference,conan_recipe_file):
 
   Path(install_dir/'conanfile.py').write_text(conan_recipe_text)
   subprocess.run( ['conan','editable','add',install_dir,conan_package_reference] )
+
+@main.command(help="Extract a basic Conan file from a Conan package recipe.")
+@click.argument("conan-package-recipe")
+@click.option("--output-file","-o",help="Write output to file.")
+@click.pass_context
+def extract_basic_conan_file(ctx,conan_package_recipe,output_file):
+  def get_conan_package_class(module):
+    for item in dir(module):
+      obj = getattr(module,item)
+      if inspect.isclass(obj):
+        for base in obj.__bases__:
+          if base.__name__ == "ConanFile":
+            return obj
+
+
+
+  spec = importlib.util.spec_from_file_location("conanfile", conan_package_recipe)
+  conanfile = importlib.util.module_from_spec(spec)
+  spec.loader.exec_module(conanfile)
+
+  ConanPackage = get_conan_package_class(conanfile)
+
+  lines = []
+  for section in ["requires","generators"]:
+    if section in ConanPackage.__dict__:
+      items = ConanPackage.__dict__[section]
+      if isinstance(items,str): items = [items]
+      lines.append(f"[{section}]")
+      lines += items
+      lines.append("")
+
+
+  if output_file:
+    Path(output_file).write_text("\n".join(lines))
+  else:
+    print("\n".join(lines))
 
 
 # util functions
