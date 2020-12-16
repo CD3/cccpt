@@ -12,104 +12,6 @@ import locale
 locale.setlocale(locale.LC_ALL,'')
 encoding = locale.getpreferredencoding()
 
-def get_project_root(path):
-  dir = subprocess.check_output(["git","rev-parse","--show-toplevel"],cwd=path)
-  dir = dir.strip().decode(encoding)
-  if dir == "":
-    raise Exception(f"Could not determine project root directlry for {str(path)}")
-
-  return Path(dir).resolve()
-
-def get_project_name(path):
-  root = get_project_root(path)
-  cmake_file = root/"CMakeLists.txt"
-  project_name = None
-  if cmake_file.exists():
-    lines = list(filter(lambda l: l.find("project(") > -1, map(lambda l: l.replace(" ",""), cmake_file.read_text().split("\n")) ))
-    if len(lines) > 1:
-      click.echo(f"Found more than one 'project' command in {str(cmake_file)}.")
-    elif len(lines) < 1:
-      click.echo(f"Did not find a 'project' command in {str(cmake_file)}.")
-    else:
-      project_name = lines[0].replace(" ","").strip(")").strip("project").strip("(")
-
-  if project_name is None:
-    project_name = root.stem
-
-    
-  return project_name
-
-
-
-def is_exe(path):
-  '''Return true if file specified by path is an executable.'''
-  if path.is_file():
-    if os.access(str(path),os.X_OK):
-      return True
-
-  return False
-
-def is_debug(path):
-  '''Return true if file specified by path is an executable with debug info.'''
-  if path.is_file():
-    ret = subprocess.check_output(["file",str(path)])
-    return ret.decode(encoding).find("with debug_info") > -1
-
-  return False
-
-
-def get_list_of_test_executables_in_path(path, patterns=None):
-  if patterns is None:
-    patterns = ["*Tests*", "*Tester*", "*Tests*.exe", "*Tester*.exe", "*unitTest*", "*unitTest*.exe"]
-
-
-  executables = []
-  for pattern in patterns:
-    for file in path.rglob(pattern):
-      file = file.resolve()
-      if is_exe(file):
-        executables.append(file)
-
-  debugable_executables = []
-  release_executables = []
-  for file in executables:
-    if is_debug(file):
-      debugable_executables.append(file)
-    else:
-      release_executables.append(file)
-
-  return {'all' : executables, 'release' : release_executables, 'debug' : debugable_executables }
-
-
-def get_build_type_str(is_release):
-  build_type = "Debug"
-  if is_release:
-    build_type = "Release"
-  return build_type
-
-
-def get_build_dir(path,is_release):
-  build_type = get_build_type_str(is_release)
-  root_dir = get_project_root(path)
-  platorm_name = platform.system()
-  build_dir = root_dir/f"build-{build_type.lower()}-{platorm_name.lower()}"
-  return build_dir
-
-def find_files_above(path,pattern,max_height = None):
-  height = 0
-  files = []
-  for dir in itertools.chain([path], path.resolve().parents):
-    if max_height is not None and height > max_height:
-      files.reverse()
-      return files
-    for match in dir.glob(pattern):
-      files.append(match)
-    height += 1
-
-  files.reverse()
-  return files
-
-
 
 @click.group(help="Clark's CMake, Conan, and C++ Project Tools.",context_settings=dict(ignore_unknown_options=True))
 @click.option("--config","-c",default=".project.yml",help="Configuration file storing default options.")
@@ -218,7 +120,7 @@ def build(ctx,release,extra_cmake_build_options,run_configure):
 
 
 
-@main.command(help="Test a C++ project by running unit tests.")
+@main.command(help="Test a Clark project by running unit tests.")
 @click.option("--release/--debug","-R/-D",help="Test release mode or debug mode.")
 @click.pass_context
 def test(ctx,release):
@@ -257,7 +159,7 @@ def install(ctx,directory):
   ctx.invoke(build,release=True,extra_cmake_build_options=['--target','install'])
 
 
-@main.command(help="Debug a C++ project.")
+@main.command(help="Debug a Clark project unit tests.")
 @click.pass_context
 def debug(ctx):
   ctx.invoke(build,release=False)
@@ -385,5 +287,104 @@ def make_conan_editable_package(ctx,conan_package_reference,conan_recipe_file):
 
   Path(install_dir/'conanfile.py').write_text(conan_recipe_text)
   subprocess.run( ['conan','editable','add',install_dir,conan_package_reference] )
+
+
+# util functions
+
+
+def get_project_root(path):
+  dir = subprocess.check_output(["git","rev-parse","--show-toplevel"],cwd=path)
+  dir = dir.strip().decode(encoding)
+  if dir == "":
+    raise Exception(f"Could not determine project root directlry for {str(path)}")
+
+  return Path(dir).resolve()
+
+def get_project_name(path):
+  root = get_project_root(path)
+  cmake_file = root/"CMakeLists.txt"
+  project_name = None
+  if cmake_file.exists():
+    lines = list(filter(lambda l: l.find("project(") > -1, map(lambda l: l.replace(" ",""), cmake_file.read_text().split("\n")) ))
+    if len(lines) > 1:
+      click.echo(f"Found more than one 'project' command in {str(cmake_file)}.")
+    elif len(lines) < 1:
+      click.echo(f"Did not find a 'project' command in {str(cmake_file)}.")
+    else:
+      project_name = lines[0].replace(" ","").strip(")").strip("project").strip("(")
+
+  if project_name is None:
+    project_name = root.stem
+
+    
+  return project_name
+
+def is_exe(path):
+  '''Return true if file specified by path is an executable.'''
+  if path.is_file():
+    if os.access(str(path),os.X_OK):
+      return True
+
+  return False
+
+def is_debug(path):
+  '''Return true if file specified by path is an executable with debug info.'''
+  if path.is_file():
+    ret = subprocess.check_output(["file",str(path)])
+    return ret.decode(encoding).find("with debug_info") > -1
+
+  return False
+
+def get_list_of_test_executables_in_path(path, patterns=None):
+  if patterns is None:
+    patterns = ["*Tests*", "*Tester*", "*Tests*.exe", "*Tester*.exe", "*unitTest*", "*unitTest*.exe"]
+
+
+  executables = []
+  for pattern in patterns:
+    for file in path.rglob(pattern):
+      file = file.resolve()
+      if is_exe(file):
+        executables.append(file)
+
+  debugable_executables = []
+  release_executables = []
+  for file in executables:
+    if is_debug(file):
+      debugable_executables.append(file)
+    else:
+      release_executables.append(file)
+
+  return {'all' : executables, 'release' : release_executables, 'debug' : debugable_executables }
+
+def get_build_type_str(is_release):
+  build_type = "Debug"
+  if is_release:
+    build_type = "Release"
+  return build_type
+
+def get_build_dir(path,is_release):
+  build_type = get_build_type_str(is_release)
+  root_dir = get_project_root(path)
+  platorm_name = platform.system()
+  build_dir = root_dir/f"build-{build_type.lower()}-{platorm_name.lower()}"
+  return build_dir
+
+def find_files_above(path,pattern,max_height = None):
+  height = 0
+  files = []
+  for dir in itertools.chain([path], path.resolve().parents):
+    if max_height is not None and height > max_height:
+      files.reverse()
+      return files
+    for match in dir.glob(pattern):
+      files.append(match)
+    height += 1
+
+  files.reverse()
+  return files
+
+
+
 
 
