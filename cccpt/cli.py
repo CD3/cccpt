@@ -437,6 +437,58 @@ def install_conan_recipes(ctx,url,home):
   return ret
 
 
+@main.command(help="Get a copy of a project.")
+@click.argument("name")
+@click.option("--remote", "-r", multiple=True,help="Specify the remote to look for project named NAME.")
+@click.pass_context
+def get(ctx,name,remote):
+  if not remote and not '/project/remotes' in ctx.obj:
+    click.echo(click.style(f"Did not find any remotes to look for {name} project in.",fg="red"))
+    click.echo(click.style(f"You need to either specify a remote to use with --remote url,",fg="red"))
+    click.echo(click.style(f"or add a section named /project/remotes that contains a list of remote urls,",fg="red"))
+    click.echo(click.style(f"to one of the project configuration files.",fg="red"))
+  
+  if len(remote) < 1:
+    remote = ctx.obj['/project/remotes']
+
+  failed_remotes = []
+  success_remote = None
+  for r in remote:
+    parsed_url = urllib.parse.urlparse(r)
+    if parsed_url.scheme in ['','file']:
+        src = (Path(parsed_url.path)/name)
+        dest = (Path('.')/name)
+        if src == dest:
+          click.echo(click.style("Cannot clone/copy project into itself.",fg="red"))
+          return 1
+        if dest.exists():
+          click.echo(click.style("Project directory already exists. Remove it or change to a different directory.",fg="red"))
+          return 1
+        try:
+          cmd = ['git','clone',str(Path(parsed_url.path)/name),name]
+          output = subprocess.check_output(cmd,stderr=subprocess.STDOUT)
+          success_remote = ('clone',src)
+          break
+        except:
+          try:
+            shutil.copytree(src,dest)
+            success_remote = ('copie',src)
+            break
+          except:
+            failed_remotes.append(src)
+    else:
+      click.echo(click.style(f"Unknown scheme {parsed_url.scheme} in URL.",fg="red"))
+      failed_remotes.append(r)
+      continue
+
+  if success_remote is not None:
+    click.echo(click.style(f"Sucess: {success_remote[0]}ed project from {success_remote[1]}.",fg='green'))
+  else:
+    click.echo(click.style(f"Fail: could not retrieve {name} from any remotes.",fg='red'))
+    click.echo(click.style(f"  Tried the following:",fg='red'))
+    for f in failed_remotes:
+      click.echo(click.style(f"    - {f}",fg='red'))
+
 
 
 
