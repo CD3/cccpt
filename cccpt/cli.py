@@ -236,16 +236,12 @@ def debug(ctx):
 @click.pass_context
 def clean(ctx,all):
 
-  def del_rw(func,path,_):
-    '''
-    Clear the readonly bit on path and try to remove it.
-    '''
-    os.chmod(path, stat.S_IWRITE)
-    s.remove(path)
-
   for build_dir in Path(".").glob("build-*"):
     click.echo(f"Removing {str(build_dir)}.")
-    shutil.rmtree(build_dir, onerror=del_rw)
+    try:
+      rmtree(build_dir)
+    except:
+      error(f"Could not remove {str(build_dir)}. You may be trying to delete files created by a different OS.")
 
   if not all:
     return 0
@@ -504,14 +500,58 @@ def get(ctx,name,remote):
     for f in failed_remotes:
       click.echo(click.style(f"    - {f}",fg='red'))
 
+@main.command(help="Tag current commit for release after running unit tests and any pre-release test scripts.")
+@click.argument("tag")
+@click.option("--dirty-ok","-d",help="Dont error out if working directory is not clean.")
+@click.pass_context
+def tag_for_release(ctx,tag,dirty_ok):
+  tags = subprocess.check_output(['git','tag']).decode(encoding).split('\n')
+  if tag in tags:
+    error(f"{tag} already exists. Choose another version number.")
+    return 1
+
+  if not dirty_ok:
+    output = subprocess.check_output(['git','status','--porcelain'],encoding=encoding)
+    if output != "":
+      error(f"The working directory is not clean. Use --dirty-ok to tag anyway. Exiting now!")
+      error(output)
+      return 1
+
+  root = get_project_root(Path())
+  tdir = Path(tempfile.mkdtemp())
+  ctx.obj['/project/build-dir'] = tdir
+  ret = ctx.invoke(test,release=True)
+  if ret != 0:
+    error("Unit tests did not pass. Exiting now!")
+    return 1
+
+  hook_patterns = ["**/pre-tag-release.sh"]
+  for hook_pattern in hook_patterns:
+    hooks = root.glob(hook_pattern)
+    for hook in hooks:
+      info(f"Running pre-rlease hook {str(hook)}")
+      if not is_exe(hook):
+        error(f"Found a pre-release hook '{hook}', but it is not executable.")
+      res = subprocess.run([hook])
+      if res.returncode != 0:
+        error(f"Pre-release hook '{str(hook)}' failed. Exiting now!")
+        return 1
 
 
 
 
-
-
+  sucess("All tests passed. Tagging commit.")
+  subprocess.run(['git','tag',tag])
 # util functions
 
+def error(msg):
+  click.echo(click.style(msg,fg='red'))
+
+def sucess(msg):
+  click.echo(click.style(msg,fg='green'))
+
+def info(msg):
+  click.echo(msg)
 
 def get_project_root(path):
   dir = subprocess.check_output(["git","rev-parse","--show-toplevel"],cwd=path)
@@ -606,6 +646,20 @@ def find_files_above(path,pattern,max_height = None):
   return files
 
 
+def rmtree(dir):
+  # shutil.rmtree(...) does not work on Windows all the time.
+  # for file in path.glob('**'):
+  #   if file.is_file():
+  #     print(file)
+  #   else:
+  #     print(file)
+  def del_rw(func,path,_):
+    '''
+    Clear the readonly bit on path and try to remove it.
+    '''
+    os.chmod(path, stat.S_IWRITE)
+    s.remove(path)
+  shutil.rmtree(dir, onerror=del_rw)
 
 
 
