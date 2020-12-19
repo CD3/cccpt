@@ -16,6 +16,7 @@ import importlib.util
 import inspect
 import urllib.parse
 import tempfile
+import re
 
 locale.setlocale(locale.LC_ALL,'')
 encoding = locale.getpreferredencoding()
@@ -258,13 +259,27 @@ def clean(ctx,all):
 @click.pass_context
 def info(ctx):
   cwd = Path()
+  root = get_project_root(Path())
   project_name = get_project_name(cwd)
   build_dir_rel = get_build_dir(Path(),True)
   build_dir_deb = get_build_dir(Path(),False)
 
   click.echo(f"Project Name: {project_name}")
-  click.echo(f"Build Directory (Release Mode): {build_dir_rel}")
-  click.echo(f"Build Directory (Debug Mode): {build_dir_deb}")
+  click.echo(f"Root Directory: {root}")
+  click.echo(f"Build Directory: (Release Mode): {build_dir_rel}")
+  click.echo(f"Build Directory: (Debug Mode): {build_dir_deb}")
+
+  cmakelists = root.glob("**/CMakeLists.txt")
+  click.echo(f"Dependencies referenced by CMake")
+  for file in cmakelists:
+    click.echo(f"{str(file.relative_to(root))}")
+    text = file.read_text()
+    for match in re.findall("find_package\s*\(\s*([^\s]+)",text):
+      click.echo(f"  {match}")
+    
+
+  
+
 
 
 @main.command(help="Create a new C++ project.")
