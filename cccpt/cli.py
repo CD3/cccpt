@@ -4,6 +4,7 @@ from fspathtree import fspathtree
 
 import os
 import stat
+import fnmatch
 import shutil
 import platform
 import logging
@@ -13,6 +14,8 @@ import subprocess
 import locale
 import importlib.util
 import inspect
+import urllib.parse
+import tempfile
 
 locale.setlocale(locale.LC_ALL,'')
 encoding = locale.getpreferredencoding()
@@ -22,8 +25,9 @@ encoding = locale.getpreferredencoding()
 @click.option("--config","-c",default=".project.yml",help="Configuration file storing default options.")
 @click.option("--local-config-only","-l",is_flag=True,help="Do not look for global configuration files in parent directories.")
 @click.option("--build-dir","-b",help="Specify the build directory to use. By default, the build directory is computed.")
+@click.option("--verbose","-v",help="Print verbose messages.")
 @click.pass_context
-def main(ctx,config,local_config_only,build_dir):
+def main(ctx,config,local_config_only,build_dir,verbose):
 
   max_height = None
   if local_config_only:
@@ -31,7 +35,8 @@ def main(ctx,config,local_config_only,build_dir):
   config_files = find_files_above(Path(),config,max_height)
   obj = dict()
   for file in config_files:
-    click.echo(f"Reading configuration from {str(file)}.")
+    if verbose:
+      click.echo(f"Reading configuration from {str(file)}.")
     with open(file) as f:
       conf = yaml.safe_load(f)
       if conf is not None:
@@ -44,6 +49,8 @@ def main(ctx,config,local_config_only,build_dir):
 
   if build_dir:
     ctx.obj['/project/build-dir'] = build_dir
+
+  ctx.obj['/project/verbose'] = verbose
   
 
 
@@ -68,7 +75,7 @@ def configure(ctx,release,install_prefix,extra_cmake_configure_options,extra_con
     build_dir = get_build_dir(Path(),release)
   else:
     build_dir = Path(build_dir)
-  build_dir.mkdir(exist_ok=True)
+  build_dir.mkdir(parents=True,exist_ok=True)
 
 
   conan_file = build_dir/"conanfile.py"
@@ -83,11 +90,13 @@ def configure(ctx,release,install_prefix,extra_cmake_configure_options,extra_con
     click.echo(click.style(f"Using {str(conan_file)} to install dependencies with conan.",fg="green"))
     conan_cmd = ["conan","install",conan_file,"--build=missing"]
     conan_cmd += extra_conan_install_options
-    subprocess.run(conan_cmd,cwd=build_dir)
+    result = subprocess.run(conan_cmd,cwd=build_dir)
+    if result.returncode != 0:
+      return result.returncode
 
   cmake_file = root_dir/"CMakeLists.txt"
   if cmake_file.exists():
-    cmake_cmd = ["cmake",".."]
+    cmake_cmd = ["cmake",str(cmake_file.parent)]
     cmake_cmd.append(f"-DCMAKE_BUILD_TYPE={build_type}")
     cmake_cmd += extra_cmake_configure_options
 
@@ -98,14 +107,17 @@ def configure(ctx,release,install_prefix,extra_cmake_configure_options,extra_con
       cmake_cmd = ['.','./activate.sh','&&'] + cmake_cmd
 
     subprocess.run(' '.join(cmake_cmd),cwd=build_dir,shell=True)
-  ctx.obj['build_dir'] = build_dir
+    return result.returncode
+
+  return 0
 
 @main.command(help="Build a CMake project.")
 @click.option("--release/--debug","-R/-D",help="Build release mode or debug mode.")
 @click.option("--extra-cmake-build-options",multiple=True,help="Extra options to pass to build step.")
-@click.option("--run-configure/--no-run-configure",multiple=True,help="Run the configure command, even if project has already been configured.")
+@click.option("--target","-t",help="Build specific target.")
+@click.option("--run-configure/--no-run-configure","-c/-n",multiple=True,help="Run the configure command, even if project has already been configured.")
 @click.pass_context
-def build(ctx,release,extra_cmake_build_options,run_configure):
+def build(ctx,release,extra_cmake_build_options,run_configure,target):
 
   if extra_cmake_build_options is None or len(extra_cmake_build_options) < 1:
     extra_cmake_build_options = ctx.obj.get("project/build/extra-cmake-build-options",[])
@@ -120,16 +132,26 @@ def build(ctx,release,extra_cmake_build_options,run_configure):
     ctx.invoke(configure,release=release)
 
   cmake_cmd = ["cmake","--build","."]
+  if target:
+    cmake_cmd += ['--target',target]
   cmake_cmd += extra_cmake_build_options
-  subprocess.run(cmake_cmd,cwd=build_dir)
+  result = subprocess.run(cmake_cmd,cwd=build_dir)
+  return result.returncode
 
 
 
 @main.command(help="Test a Clark project by running unit tests.")
 @click.option("--release/--debug","-R/-D",help="Test release mode or debug mode.")
+@click.option("--match","-k",help="Only run test executable matching TEXT.")
+@click.option("--skip-build/--run-build","-s/-b",help="Skip build phase.")
 @click.pass_context
-def test(ctx,release):
-  ctx.invoke(build,release=release)
+def test(ctx,release,match,skip_build):
+  if not skip_build:
+    ret = ctx.invoke(build,release=release)
+    if ret != 0:
+      click.echo(click.style(f"Build phase returned non-zero, indicating that there was an error. Skipping test phase.",fg="red"))
+      return ret
+
   build_dir = ctx.obj.get("/project/build-dir",None)
   if build_dir is None:
     build_dir = get_build_dir(Path(),release)
@@ -149,9 +171,14 @@ def test(ctx,release):
 
 
   
+  ret = 0
   for file in tests_to_run:
-    click.echo(f"Running {str(file)}")
-    subprocess.run(file,cwd=build_dir)
+    if not match or str(file).find(match) > -1:
+      click.echo(f"Running {str(file)}")
+      result = subprocess.run(file,cwd=build_dir)
+      ret += abs(result.returncode)
+
+  return ret
 
 
 @main.command(help="Install a CMake project into a specified directory.")
@@ -198,7 +225,6 @@ def debug(ctx):
   
   for file in tests_to_run:
     res = subprocess.run([rrexec,'record',file],cwd=build_dir)
-    print(res)
     if res.returncode:
       click.echo("There was a error running rr")
 
@@ -293,6 +319,36 @@ def make_conan_editable_package(ctx,conan_package_reference,conan_recipe_file):
   Path(install_dir/'conanfile.py').write_text(conan_recipe_text)
   subprocess.run( ['conan','editable','add',install_dir,conan_package_reference] )
 
+@main.command(help="Print all source files in a project (suitable for feeding to `entr`).")
+@click.option("--pattern","-p",multiple=True,help="Pattern used to identify a source file (can be given multiple times).")
+@click.option("--ignore-pattern","-i",multiple=True,help="Pattern used to ignore files that have been identified as source (can be given multiple times).")
+@click.option("--include-pattern","-I",multiple=True,help="Pattern used to include files that have been identified as source but match an ignore pattern (can be given multiple times).")
+@click.pass_context
+def list_sources(ctx,pattern,ignore_pattern,include_pattern):
+
+  root = get_project_root(Path())
+  source_patterns = ['*.cpp','*.h','*.hpp','*.py']
+  source_ignore_patterns = [ '*/.git/*',str(root)+'/build*' ]
+  source_include_patterns = []
+
+  if pattern:
+    source_patterns = list(pattern)
+  if ignore_pattern:
+    source_ignore_patterns = list(ignore_pattern)
+  if include_pattern:
+    source_include_patterns = list(include_pattern)
+
+
+  for file in root.glob('**/*'):
+    if not any(map( lambda pattern: fnmatch.fnmatch(file,pattern), source_patterns )):
+      continue
+
+    if any(map( lambda pattern: fnmatch.fnmatch(file,pattern), source_ignore_patterns )) and not any(map( lambda pattern: fnmatch.fnmatch(file,pattern), source_include_patterns )):
+      continue
+
+    click.echo(file)
+
+
 @main.command(help="Extract a basic Conan file from a Conan package recipe.")
 @click.argument("conan-package-recipe")
 @click.option("--output-file","-o",help="Write output to file.")
@@ -328,6 +384,63 @@ def extract_basic_conan_file(ctx,conan_package_recipe,output_file):
     Path(output_file).write_text("\n".join(lines))
   else:
     print("\n".join(lines))
+
+@main.command(help="Install a set of Conan package recipes.")
+@click.argument("url",nargs=-1,default=None)
+@click.option("--home", help="The conan user home directory to install recipes into.")
+@click.pass_context
+def install_conan_recipes(ctx,url,home):
+  '''URL is a git repository containing Conan package recipes.
+  '''
+  if len(url) < 1:
+    url = [click.prompt(click.style("Where are the recipes? ",fg='green'),type=str)]
+
+
+  if home:
+    os.environ['CONAN_USER_HOME'] = home
+
+  ret = 0
+  for u in url:
+    tdir = Path(tempfile.mkdtemp())
+    res = subprocess.run(['git','clone',u,str(tdir)])
+    if res.returncode != 0:
+        click.echo(click.style(f'There was a problem cloning repo {u}.',fg='red'))
+        ret += 1
+        continue
+
+    if (tdir/'export-packages.py').exists():
+      click.echo(f"Found an export-packages.py for {u}")
+      res = subprocess.run(['python','export-packages.py'],cwd=tdir)
+      if res.returncode != 0:
+        click.echo(click.style(f'There was a problem installing recipes in {u} with the export-packages.py script.',fg='red'))
+        ret += 1
+      continue
+
+    user_channel = click.prompt(click.style(f"What user/channel should the recipes in {u} be installed under? ",fg='green'),type=str)
+    exported = False
+    for file in tdir.glob('**/conanfile.py'):
+      exported = True
+      res = subprocess.run(['conan','export',str(file),user_channel])
+      if res.returncode != 0:
+        click.echo(click.style(f'There was a problem manually exporting the recipes in {u}.',fg='red'))
+        ret += 1
+      continue
+
+    if not exported:
+      click.echo(click.style(f"Could not figure out how to export the recipes in {u}.",fg='red'))
+      ret += 1
+
+    try:
+      shutil.rmtree(tdir)
+    except: pass
+
+  return ret
+
+
+
+
+
+
 
 
 # util functions
