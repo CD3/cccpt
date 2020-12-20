@@ -17,6 +17,8 @@ import inspect
 import urllib.parse
 import tempfile
 import re
+import configparser
+import json
 
 locale.setlocale(locale.LC_ALL,'')
 encoding = locale.getpreferredencoding()
@@ -104,10 +106,24 @@ def configure(ctx,release,install_prefix,extra_cmake_configure_options,extra_con
     if install_prefix:
       cmake_cmd.append(f"-DCMAKE_INSTALL_PREFIX={install_prefix}")
 
-    if (build_dir/"activate.sh").exists():
-      cmake_cmd = ['.','./activate.sh','&&'] + cmake_cmd
+    # If a conan build info file exists, read it and load the environment variables.
+    if (build_dir/'conanbuildinfo.txt').exists():
+      conanbuildinfo = configparser.ConfigParser(allow_no_value=True,delimiters=('=',))
+      conanbuildinfo.optionxform=str # don't convert keys to lowercase
+      conanbuildinfo.read(build_dir/'conanbuildinfo.txt')
+      env_sections = list(filter( lambda s : s.startswith("ENV_"), conanbuildinfo.sections() ))
+      for section in env_sections:
+        for k in conanbuildinfo[section]:
+          v = conanbuildinfo[section][k]
+          if v.startswith('['):
+            v = json.loads(v.replace("\\","\\\\"))
+          if type(v) is list:
+            v = ':'.join(v) + ":" + os.environ.get(k,'')
+          os.environ[k] = v
 
-    subprocess.run(' '.join(cmake_cmd),cwd=build_dir,shell=True)
+
+
+    subprocess.run(cmake_cmd,cwd=build_dir)
     return result.returncode
 
   return 0
