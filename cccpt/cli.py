@@ -19,6 +19,7 @@ import tempfile
 import re
 import configparser
 import json
+import pprint
 
 locale.setlocale(locale.LC_ALL,'')
 encoding = locale.getpreferredencoding()
@@ -54,6 +55,7 @@ def main(ctx,config,local_config_only,build_dir,verbose):
     ctx.obj['/project/build-dir'] = build_dir
 
   ctx.obj['/project/verbose'] = verbose
+  obj['project/config_files'] = config_files
   
 
 
@@ -91,7 +93,7 @@ def configure(ctx,release,install_prefix,extra_cmake_configure_options,extra_con
 
   if conan_file.exists():
     click.echo(click.style(f"Using {str(conan_file)} to install dependencies with conan.",fg="green"))
-    conan_cmd = ["conan","install",conan_file,"--build=missing"]
+    conan_cmd = ["conan","install",conan_file,"--build=missing","-s",f"build_type={build_type}"]
     conan_cmd += extra_conan_install_options
     result = subprocess.run(conan_cmd,cwd=build_dir)
     if result.returncode != 0:
@@ -108,18 +110,7 @@ def configure(ctx,release,install_prefix,extra_cmake_configure_options,extra_con
 
     # If a conan build info file exists, read it and load the environment variables.
     if (build_dir/'conanbuildinfo.txt').exists():
-      conanbuildinfo = configparser.ConfigParser(allow_no_value=True,delimiters=('=',))
-      conanbuildinfo.optionxform=str # don't convert keys to lowercase
-      conanbuildinfo.read(build_dir/'conanbuildinfo.txt')
-      env_sections = list(filter( lambda s : s.startswith("ENV_"), conanbuildinfo.sections() ))
-      for section in env_sections:
-        for k in conanbuildinfo[section]:
-          v = conanbuildinfo[section][k]
-          if v.startswith('['):
-            v = json.loads(v.replace("\\","\\\\"))
-          if type(v) is list:
-            v = ':'.join(v) + ":" + os.environ.get(k,'')
-          os.environ[k] = v
+      load_conan_environment(build_dir/'conanbuildinfo.txt')
 
 
 
@@ -147,6 +138,9 @@ def build(ctx,release,extra_cmake_build_options,run_configure,target):
 
   if run_configure or not (build_dir/"CMakeCache.txt").exists():
     ctx.invoke(configure,release=release)
+  else:
+    if (build_dir/'conanbuildinfo.txt').exists():
+      load_conan_environment(build_dir/'conanbuildinfo.txt')
 
   cmake_cmd = ["cmake","--build","."]
   if target:
@@ -176,11 +170,7 @@ def test(ctx,release,match,skip_build):
     build_dir = Path(build_dir)
 
   test_executables = get_list_of_test_executables_in_path(build_dir)
-
-  if release:
-    tests_to_run = test_executables['release']
-  else:
-    tests_to_run = test_executables['debug']
+  tests_to_run = test_executables['all']
 
   if len(tests_to_run) < 1:
     click.echo(f"Did not find any test executables in {str(build_dir)}.")
@@ -288,16 +278,74 @@ def info(ctx):
     text = file.read_text()
     for match in re.findall("find_package\s*\(\s*([^\s]+)",text):
       click.echo(f"  {match}")
+  
+  click.echo("Configuration:")
+  pprint.pprint(ctx.obj.tree)
     
 
   
 
 
 
-@main.command(help="Create a new C++ project.")
+@main.command(help="Create a new **very basic** C++ project (here be dragons).")
+@click.argument("name")
 @click.pass_context
-def new(ctx):
-  cwd = Path()
+def new(ctx, name):
+  '''
+  Create a **very basic** empty C++ project, named NAME, based on common practices.
+  This is only intended for user new to C++.
+  Most users will probably find this insufficient or simply dissagree with every choice that has been made.
+  New users to C++ can use it to get started quickly.
+
+  The generated project will be based on the following tools:
+    - git: for version control.
+    - CMake: for build configuration.
+    - Conan: for dependency managment.
+    - Catch2: for unit testing.
+    - Doxygen: for documentation.
+    - clang-format: for code formatting.
+  '''
+  cwd = Path('.')
+  error("This command will generate a **very basic** CMake-based C++ project..")
+  error("If you have *any* experience building C++ projects,")
+  error("you will almost certainly **not** like the choices made.")
+  error("")
+  error("It is intended for new users to get started writting C++ code")
+  error("while still following best practices for the most commonly used tools.")
+  error("")
+  error("It currently sets up a project based on the Pitchfork Layout proposal,")
+  error("https://api.csswg.org/bikeshed/?force=1&url=https://raw.githubusercontent.com/vector-of-bool/pitchfork/develop/data/spec.bs#intro.files")
+  error("and is not very configurable yet.")
+  error("")
+  error("If you have preferences on how a project should be layed out, configured, etc,")
+  error("then you should generate a new project by hand, or however you normally do it.")
+  error("")
+  error("As long as you use CMake and Conan in the usual way, the other commands (configure, build, etc.) will work.")
+  error("")
+  error("In the future, we may provide a customization point that normal users could use")
+  error("to build a project based on their own preferences.")
+  error("")
+  error("Stay tuned...")
+  error("")
+  error("")
+
+  builder = PFLBuilder(name,dir=cwd)
+
+  try:
+    builder.setup()
+  except Exception as e:
+    error("There was a problem creating the new project")
+    error(str(e))
+
+
+
+
+
+
+
+
+
+
 
 
 @main.command(help="Create a Conan editable package from a project.")
@@ -607,14 +655,18 @@ def is_exe(path):
 def is_debug(path):
   '''Return true if file specified by path is an executable with debug info.'''
   if path.is_file():
-    ret = subprocess.check_output(["file",str(path)])
-    return ret.decode(encoding).find("with debug_info") > -1
+    if platform.system().lower() == "linux":
+      ret = subprocess.check_output(["file",str(path)])
+      return ret.decode(encoding).find("with debug_info") > -1
 
   return False
 
 def get_list_of_test_executables_in_path(path, patterns=None):
   if patterns is None:
-    patterns = ["*Tests*", "*Tester*", "*Tests*.exe", "*Tester*.exe", "*unitTest*", "*unitTest*.exe"]
+    if platform.system().lower() == "linux":
+      patterns = ["*Tests*", "*Tester*", "*unitTest*"]
+    if platform.system().lower() == "windows":
+      patterns = ["*Tests*.exe", "*Tester*.exe", "*unitTest*.exe"]
 
 
   executables = []
@@ -677,5 +729,236 @@ def rmtree(dir):
     s.remove(path)
   shutil.rmtree(dir, onerror=del_rw)
 
+
+def load_conan_environment(path):
+  info = configparser.ConfigParser(allow_no_value=True,delimiters=('=',))
+  info.optionxform=str # don't convert keys to lowercase
+  info.read(path)
+  env_sections = list(filter( lambda s : s.startswith("ENV_"), info.sections() ))
+  for section in env_sections:
+    for k in info[section]:
+      v = info[section][k]
+      if v.startswith('['):
+        v = json.loads(v.replace("\\","\\\\"))
+      if type(v) is list:
+        v = ':'.join(v) + ":" + os.environ.get(k,'')
+      os.environ[k] = v
+
+
+
+class NewProjectBuilder:
+  def __init__(self,name,dir=Path('.'),type='exe'):
+    dir = Path(dir)
+    self.name = name
+    self.type = type
+    self.root = dir/name
+    self.check_system_tools()
+
+  def setup_layout(self):
+    if self.root.exists():
+      raise Exception(f"Cannot create project directory {str(self.root)}, it already exists.")
+    self.root.mkdir()
+
+
+  def check_system_tools(self):
+    self.cmake = shutil.which("cmake")
+    self.conan = shutil.which("conan")
+    self.git = shutil.which("git")
+
+
+
+  def setup_cmake(self):
+    pass
+  def setup_conan(self):
+    pass
+  def setup_docs(self):
+    pass
+  def setup_tests(self):
+    pass
+  def setup_source(self):
+    pass
+  def setup_git(self):
+    gitignore = self.root/".gitignore"
+    gitignore.write_text('''
+build*/ # build directoreis
+.*.swp  # vim swap files
+*~      # emacs backup files
+.cland/ # clangd language server database
+compile_commands.json # clang compile command database
+''')
+    subprocess.run([self.git,"init"],cwd=self.root)
+    subprocess.run([self.git,"add","."],cwd=self.root)
+    subprocess.run([self.git,"commit","-m","initial import"],cwd=self.root)
+
+
+  def setup(self):
+    self.setup_layout()
+    self.setup_source()
+    self.setup_conan()
+    self.setup_cmake()
+    self.setup_docs()
+    self.setup_tests()
+    self.setup_git()
+
+
+
+
+
+  def get_installed_cmake_version(self):
+    ret = subprocess.check_output([self.cmake,'--version']).decode(encoding)
+    version = re.match("cmake version ([0-9]\.[0-9]\.[0-9]).*\n",ret)
+    version = re.match("cmake version ([0-9]+\.[0-9]+\.[0-9]+)",ret)[1]
+    return version
+
+class PFLBuilder(NewProjectBuilder):
+  def __init__(self,name,dir):
+    super().__init__(name,dir)
+
+    self.src_dir = self.root/'src'
+    self.tests_dir = self.root/'tests'
+    self.docs_dir = self.root/'docs'
+    self.data_dir = self.root/'data'
+    self.examples_dir = self.root/'examples'
+    self.tools_dir = self.root/'tools'
+
+    self.toplevel_cmakelists = self.root/"CMakeLists.txt"
+    self.tests_cmakelists = self.tests_dir/"CMakeLists.txt"
+
+
+  def setup_layout(self):
+    super().setup_layout()
+
+    self.src_dir.mkdir()
+    self.tests_dir.mkdir()
+    self.docs_dir.mkdir()
+    self.data_dir.mkdir()
+    self.examples_dir.mkdir()
+    self.tools_dir.mkdir()
+
+  def setup_cmake(self):
+    cmake_minimum_version = '.'.join(self.get_installed_cmake_version().split('.')[0:2])
+    chunks = list()
+    chunks.append(
+f'''
+cmake_minimum_required(VERSION {cmake_minimum_version})
+project({self.name})
+set(CMAKE_EXPORT_COMPILE_COMMANDS ON)
+
+include(${{CMAKE_BINARY_DIR}}/conanbuildinfo.cmake)
+conan_basic_setup(TARGETS)
+''')
+    if self.type == 'exe':
+      chunks.append(f'''
+add_executable( {self.name} )
+target_sources( {self.name} PUBLIC src/main.cpp ) 
+target_compile_features( {self.name} PUBLIC cxx_std_17 )
+''')
+
+    chunks.append(
+f'''
+install(TARGETS {self.name}
+  EXPORT {self.name}Targets
+  LIBRARY DESTINATION lib
+  ARCHIVE DESTINATION lib
+  RUNTIME DESTINATION bin
+  INCLUDES DESTINATION include)
+''')
+
+
+    self.toplevel_cmakelists.write_text('\n'.join(chunks))
+
+
+  def setup_conan(self):
+    conanfile = self.root/"conanfile.txt"
+    conanfile.write_text(
+    '''[requires]
+# put dependencies here
+# examples:
+# boost/1.70.0
+[generators]
+cmake
+virtualenv
+'''
+    )
+
+
+  def setup_source(self):
+    if self.type == 'exe':
+      main_cpp = self.src_dir/'main.cpp'
+      main_cpp.write_text(
+'''
+#include <iostream>
+
+int main(int argc,char* argv[])
+{
+  std::cout << "Hello World" << std::endl;
+}
+'''
+)
+    elif self.type == 'lib':
+      lib_cpp = self.src_dir/f'{self.name}.cpp'
+      lib_h   = self.src_dir/f'{self.name}.hpp'
+      lib_h.write_text(
+f'''
+#include <string>
+
+std::string version();
+f'''
+)
+      lib_cpp.write_text(
+'''
+#include "./{self.name}.hpp"
+
+std::string version()
+{
+  return "0.1";
+}
+'''
+)
+    else:
+      Exception(f"Unrecognized project type '{self.type}'. Should be 'exe' or 'lib'.")
+
+
+  def setup_docs(self):
+
+    readme = self.root / "README.md"
+    readme.write_text(
+f'''# {self.name}
+A short description of the project
+
+## Building/Installing
+
+To build the project, create a build directory, install the dependencies with Conan, and then and use CMake.
+```
+$ mkdir build
+$ cd build
+$ conan install .. --build missing
+$ cmake ..
+$ cmake --build .
+```
+
+or use `ccc build`
+```
+$ ccc build
+```
+
+To install, specify the install prefix and run the `install` target
+```
+$ mkdir build
+$ cd build
+$ conan install .. --build missing
+$ cmake .. -DCMAKE_INSTALL_PREFIX=/directory/to/install
+$ cmake --build . --target install
+```
+
+or use `ccc install`
+```
+$ ccc install /path/to/install
+```
+
+## Usage
+
+Document basic usage here.
+''')
 
 
