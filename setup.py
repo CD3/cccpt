@@ -4,7 +4,7 @@ from setuptools import setup, find_packages
 __version__= '0.1'
 
 setup(
-  name = 'cmake-conan-cpp-project-tools',
+  name = 'cpp-cmake-conan-project-tools',
   packages = ['cccpt'],
   version = __version__,
   description = "A command-line to quickly configure, build, test (and more) CMake-based C/C++ projects.",
