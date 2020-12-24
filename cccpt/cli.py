@@ -20,6 +20,7 @@ import re
 import configparser
 import json
 import pprint
+import time
 
 locale.setlocale(locale.LC_ALL,'')
 encoding = locale.getpreferredencoding()
@@ -57,7 +58,7 @@ def main(ctx,config,local_config_only,build_dir,verbose):
   ctx.obj['/project/config_files'] = config_files
 
 
-  for cmd in ['cmake','conan','git']:
+  for cmd in ['cmake','conan','git', 'vim']:
     if '/project/commands/'+cmd not in ctx.obj:
       ctx.obj['/project/commands/'+cmd] = shutil.which(cmd)
 
@@ -641,6 +642,7 @@ def tag_for_release(ctx,tag,dirty_ok):
 @click.option("--release","-r",help="Open the release build.")
 @click.pass_context
 def open(ctx,release):
+  root = get_project_root(Path())
   build_dir = ctx.obj.get("/project/build-dir",None)
   if build_dir is None:
     build_dir = get_build_dir(Path(),release)
@@ -649,6 +651,10 @@ def open(ctx,release):
 
   cmake = ctx.obj.get('/project/commands/cmake','cmake')
   ret = subprocess.run([cmake,'--open',build_dir])
+  if ret.returncode == 1 and platform.system().lower() == "linux":
+    vim = ctx.obj.get('/project/commands/vim','vim')
+    ret = subprocess.run([vim,str(root)])
+
 
   return ret.returncode
 
