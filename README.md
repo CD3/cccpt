@@ -45,6 +45,20 @@ so I wanted something I could run on either platform and have it "just work".
 
 ## Usage
 
+### Installing
+
+You can install `ccc` with pip.
+
+```
+$ pip install conan-cmake-cpp-project-tools
+```
+
+This may be an out-of-date version. To use the latest version, clone this repository and install with pip
+```
+$ cd ccpt
+$ pip install .
+```
+
 ### Requirements
 
 `ccc` expects several standard tools to be installed. It makes use of these tools wherever possible, rather
@@ -56,6 +70,8 @@ than re-implementing functionality. Current dependencies are:
 - Conan (optional)
 
 If you don't use these tools, then `ccc` won't be useful.
+
+### Commands
 
 To build a C++ project, run
 ```
