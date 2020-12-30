@@ -21,6 +21,7 @@ import configparser
 import json
 import pprint
 import time
+import hashlib
 
 locale.setlocale(locale.LC_ALL,'')
 encoding = locale.getpreferredencoding()
@@ -37,7 +38,8 @@ def main(ctx,config,local_config_only,build_dir,verbose):
   max_height = None
   if local_config_only:
     max_height = 0
-  config_files = find_files_above(Path(),config,max_height)
+  config = Path(config)
+  config_files = find_files_above(Path(),config.name,max_height)
   obj = dict()
   for file in config_files:
     if verbose:
@@ -142,6 +144,8 @@ def build(ctx,release,extra_cmake_build_options,run_configure,target):
   else:
     build_dir = Path(build_dir)
 
+  build_type = get_build_type_str(release)
+
   if run_configure or not (build_dir/"CMakeCache.txt").exists():
     ctx.invoke(configure,release=release)
   else:
@@ -149,7 +153,7 @@ def build(ctx,release,extra_cmake_build_options,run_configure,target):
       load_conan_environment(build_dir/'conanbuildinfo.txt')
 
   cmake = ctx.obj.get('/project/commands/cmake','cmake')
-  cmake_cmd = [cmake,"--build","."]
+  cmake_cmd = [cmake,"--build",".","--config",build_type]
   if target:
     cmake_cmd += ['--target',target]
   cmake_cmd += extra_cmake_build_options
@@ -183,6 +187,8 @@ def test(ctx,release,match,skip_build):
     click.echo(f"Did not find any test executables in {str(build_dir)}.")
     return 1
 
+  # filter out duplicates
+  tests_to_run = {hashlib.md5(f.read_bytes()).digest():f for f in tests_to_run}.values()
 
   
   ret = 0
@@ -547,6 +553,7 @@ def get(ctx,name,remote):
     click.echo(click.style(f"You need to either specify a remote to use with --remote url,",fg="red"))
     click.echo(click.style(f"or add a section named /project/remotes that contains a list of remote urls,",fg="red"))
     click.echo(click.style(f"to one of the project configuration files.",fg="red"))
+    return 1
   
   if len(remote) < 1:
     remote = ctx.obj['/project/remotes']
@@ -567,14 +574,17 @@ def get(ctx,name,remote):
           click.echo(click.style("Project directory already exists. Remove it or change to a different directory.",fg="red"))
           return 1
         try:
-          cmd = [git,'clone',str(Path(parsed_url.path)/name),name]
+          cmd = [git,'ls-remote',str(Path(parsed_url.path)/name),name]
           output = subprocess.check_output(cmd,stderr=subprocess.STDOUT)
-          success_remote = ('clone',src)
-          break
+          if output.returncode == 0:
+            cmd = [git,'clone',str(Path(parsed_url.path)/name),name]
+            output = subprocess.check_output(cmd,stderr=subprocess.STDOUT)
+            success_remote = ('clone',src)
+            break
         except:
           try:
             shutil.copytree(src,dest)
-            success_remote = ('copie',src)
+            success_remote = ('copy',src)
             break
           except:
             failed_remotes.append(src)
@@ -808,13 +818,16 @@ def load_conan_environment(path):
   info.optionxform=str # don't convert keys to lowercase
   info.read(path)
   env_sections = list(filter( lambda s : s.startswith("ENV_"), info.sections() ))
+  env_list_sep = ':'
+  if platform.system().lower() == "windows":
+    env_list_sep = ';'
   for section in env_sections:
     for k in info[section]:
       v = info[section][k]
       if v.startswith('['):
         v = json.loads(v.replace("\\","\\\\"))
       if type(v) is list:
-        v = ':'.join(v) + ":" + os.environ.get(k,'')
+        v = env_list_sep.join(v) + env_list_sep + os.environ.get(k,'')
       os.environ[k] = v
 
 
