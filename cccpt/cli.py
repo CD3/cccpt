@@ -26,7 +26,6 @@ import hashlib
 locale.setlocale(locale.LC_ALL,'')
 encoding = locale.getpreferredencoding()
 
-
 @click.group(help="Clark's CMake, Conan, and C++ Project Tools.",context_settings=dict(ignore_unknown_options=True))
 @click.option("--config","-c",default=".project.yml",help="Configuration file storing default options.")
 @click.option("--local-config-only","-l",is_flag=True,help="Do not look for global configuration files in parent directories.")
@@ -119,8 +118,8 @@ def configure(ctx,release,install_prefix,extra_cmake_configure_options,extra_con
       cmake_cmd.append(f"-DCMAKE_INSTALL_PREFIX={install_prefix}")
 
     # If a conan build info file exists, read it and load the environment variables.
-    if (build_dir/'conanbuildinfo.txt').exists():
-      load_conan_environment(build_dir/'conanbuildinfo.txt')
+    load_conan_buildinfo(build_dir)
+    load_conan_environment(build_dir)
 
     result = subprocess.run(cmake_cmd,cwd=build_dir)
     return result.returncode
@@ -149,8 +148,8 @@ def build(ctx,release,extra_cmake_build_options,run_configure,target):
   if run_configure or not (build_dir/"CMakeCache.txt").exists():
     ctx.invoke(configure,release=release)
   else:
-    if (build_dir/'conanbuildinfo.txt').exists():
-      load_conan_environment(build_dir/'conanbuildinfo.txt')
+    load_conan_buildinfo(build_dir)
+    load_conan_environment(build_dir)
 
   cmake = ctx.obj.get('/project/commands/cmake','cmake')
   cmake_cmd = [cmake,"--build",".","--config",build_type]
@@ -190,6 +189,7 @@ def test(ctx,release,match,skip_build):
   # filter out duplicates
   tests_to_run = {hashlib.md5(f.read_bytes()).digest():f for f in tests_to_run}.values()
 
+  load_conan_environment(build_dir)
   
   ret = 0
   for file in tests_to_run:
@@ -814,7 +814,50 @@ def rmtree(dir):
 
 
 def load_conan_environment(path):
-  info = configparser.ConfigParser(allow_no_value=True,delimiters=('=',))
+  files_to_load = []
+  if path.is_dir():
+    ext = "sh"
+    if platform.system().lower() == "windows":
+      ext = "bat"
+    files_to_load = path.glob(f'environment*.{ext}.env')
+  else:
+    files_to_load.append(path)
+
+  for file in files_to_load:
+    vars = configparser
+    env = configparser.ConfigParser(allow_no_value=True,interpolation=None,delimiters=('=',))
+    env.optionxform=str # don't convert keys to lowercase
+    text = '[ENV]\n' + file.read_text()
+    env.read_string(text)
+    env_list_sep = ':'
+    if platform.system().lower() == "windows":
+      env_list_sep = ';'
+
+    for k in env['ENV']:
+      v = env['ENV'][k].strip('"')
+
+      if f"%{k}%" in v:
+        if k in os.environ:
+          v = v.replace(f"%{k}%",os.environ[k])
+        else:
+          v = v.replace(f"%{k}%","")
+
+      if f'"${{{k}+:${k}}}' in v:
+        if k in os.environ:
+          v = v.replace(f'"${{{k}+:${k}}}',":"+os.environ[k])
+        else:
+          v = v.replace(f'"${{{k}+:${k}}}',"")
+
+      os.environ[k] = v
+
+
+def load_conan_buildinfo(path):
+  if path.is_dir():
+    path = path / 'conanbuildinfo.txt'
+    if not path.exists():
+      return
+
+  info = configparser.ConfigParser(allow_no_value=True,interpolation=None,delimiters=('=',))
   info.optionxform=str # don't convert keys to lowercase
   info.read(path)
   env_sections = list(filter( lambda s : s.startswith("ENV_"), info.sections() ))

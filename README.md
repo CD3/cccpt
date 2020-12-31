@@ -55,7 +55,7 @@ $ pip install conan-cmake-cpp-project-tools
 
 This may be an out-of-date version. To use the latest version, clone this repository and install with pip
 ```
-$ cd ccpt
+$ cd cccpt
 $ pip install .
 ```
 
