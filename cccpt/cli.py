@@ -71,8 +71,9 @@ def main(ctx,config,local_config_only,build_dir,verbose):
 @click.option("--install-prefix","-i",help="Specify the install directory.")
 @click.option("--extra-cmake-configure-options",multiple=True,help="Extra options to pass to configure step.")
 @click.option("--extra-conan-install-options",multiple=True,help="Extra options to pass to conan install step.")
+@click.option("--generator",help="Specify the generator to use.")
 @click.pass_context
-def configure(ctx,release,install_prefix,extra_cmake_configure_options,extra_conan_install_options):
+def configure(ctx,release,install_prefix,extra_cmake_configure_options,extra_conan_install_options,generator):
 
   if extra_cmake_configure_options is None or len(extra_cmake_configure_options) < 1:
     extra_cmake_configure_options = ctx.obj.get("/project/configure/extra-cmake-configure-options",[])
@@ -112,6 +113,26 @@ def configure(ctx,release,install_prefix,extra_cmake_configure_options,extra_con
     cmake = ctx.obj.get('/project/commands/cmake','cmake')
     cmake_cmd = [cmake,str(cmake_file.parent)]
     cmake_cmd.append(f"-DCMAKE_BUILD_TYPE={build_type}")
+
+    # figure out if we need to specify the CMAKE_GENERATOR_PLATFORM option.
+    # it is only used by the Visual Studio generators.
+    if not generator:
+      if "CMAKE_GENERATOR" in os.environ:
+        generator = os.environ["CMAKE_GENERATOR"]
+      else:
+        generators = filter( lambda l : l.find(b"Generates") > 0, map(lambda l: l.strip(), subprocess.check_output([cmake,'--help']).split(b"\n")))
+        default_generators = list(filter( lambda l : l.startswith(b'*'), generators))
+        if len(default_generators) == 1:
+          generator = re.sub(b"\s*=\s*.*$",b"",re.sub(br"^\*\s*",b"",default_generators[0]))
+          generator = generator.decode(encoding)
+    else:
+      cmake_cmd.append(f"-G")
+      cmake_cmd.append(generator)
+
+    if generator and generator.startswith("Visual Studio"):
+      if platform.architecture()[0] == '64bit':
+        cmake_cmd.append(f"-DCMAKE_GENERATOR_PLATFORM=x64")
+
     cmake_cmd += extra_cmake_configure_options
 
     if install_prefix:
@@ -131,8 +152,9 @@ def configure(ctx,release,install_prefix,extra_cmake_configure_options,extra_con
 @click.option("--extra-cmake-build-options",multiple=True,help="Extra options to pass to build step.")
 @click.option("--target","-t",help="Build specific target.")
 @click.option("--run-configure/--no-run-configure","-c/-n",multiple=True,help="Run the configure command, even if project has already been configured.")
+@click.option("--parallel","-j",default=-1,help="Run the build command in with INTEGER parallel jobs if possible.")
 @click.pass_context
-def build(ctx,release,extra_cmake_build_options,run_configure,target):
+def build(ctx,release,extra_cmake_build_options,run_configure,target,parallel):
 
   if extra_cmake_build_options is None or len(extra_cmake_build_options) < 1:
     extra_cmake_build_options = ctx.obj.get("project/build/extra-cmake-build-options",[])
@@ -151,8 +173,14 @@ def build(ctx,release,extra_cmake_build_options,run_configure,target):
     load_conan_buildinfo(build_dir)
     load_conan_environment(build_dir)
 
+  if parallel < 0 or parallel > os.cpu_count():
+    parallel = os.cpu_count()
+
   cmake = ctx.obj.get('/project/commands/cmake','cmake')
   cmake_cmd = [cmake,"--build",".","--config",build_type]
+  if parallel > 0:
+    cmake_cmd += ['--parallel',str(parallel)]
+
   if target:
     cmake_cmd += ['--target',target]
   cmake_cmd += extra_cmake_build_options
