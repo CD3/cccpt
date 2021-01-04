@@ -434,11 +434,41 @@ def new(ctx, name):
 
 
 
-@main.command(help="Create a Conan editable package from a project.")
+@main.command()
 @click.argument("conan-package-reference")
 @click.option("--conan-recipe-file", "-r", help="Conan recipe file.")
+@click.option("--install-prefix", "-i", help="Specify the install directory.")
 @click.pass_context
 def make_conan_editable_package(ctx,conan_package_reference,conan_recipe_file):
+  '''
+  Create a Conan editable package from a project.
+
+  Conan editable packages is a feature that lets you point a conan package to a
+  local directory. This is useful for working on a library that other libraries
+  depend on, you can test changes without modifying the client libraries conan
+  recipe.
+
+  To create an editable package, you need to install the library into a local directory
+  and also provide a conanfile.py. You then run
+
+  > conan editable add path/to/install/dir CONAN_PACKAGE_REFERENCE
+
+  This command will first build and install the package into a local directory
+  (by default this is named <build_dir>-conan_editable_package/INSTALL),
+  copy the recipe file specified with --conan-recipe-file option to this directory,
+  and then run conan.
+
+  To work on a library, run this command once. Then run
+
+  > ccc install path/to/install/dir
+
+  to build the library. Rebuilding any clients that used the conan package will
+  immediately see the changes.
+
+  To return the package to normal, run
+
+  > conan editable remove CONAN_PACKAGE_REFERENCE
+  '''
   root_dir = get_project_root(Path())
   build_dir = get_build_dir(Path(),False)
   build_dir = build_dir.parent / (build_dir.name + "-conan_editable_package")
