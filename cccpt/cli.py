@@ -231,12 +231,43 @@ def test(ctx,release,match,skip_build):
 
 @main.command(help="Install a CMake project into a specified directory.")
 @click.argument("directory")
+@click.option("--tag","-t", help="Checkout tag TEXT before installing. This requires `git`, and will make a copy of the repository.")
 @click.pass_context
-def install(ctx,directory):
+def install(ctx,directory,tag):
   ctx.obj["/project/build-dir"] = ctx.obj.get('/project/build-dir', Path("build-install"))
 
-  ctx.invoke(configure,release=True,install_prefix=directory)
-  ctx.invoke(build,release=True,extra_cmake_build_options=['--target','install'])
+  directory = Path(directory).resolve()
+
+  if not tag:
+    ret = 0
+    ret += ctx.invoke(configure,release=True,install_prefix=directory)
+    ret += ctx.invoke(build,release=True,extra_cmake_build_options=['--target','install'])
+    return ret
+
+
+  with tempfile.TemporaryDirectory(suffix=".d",prefix='ccc-install') as tdir:
+    odir = os.getcwd()
+    root = get_project_root(Path())
+    tdir = Path(tdir)
+    git = ctx.obj.get('/project/commands/git','git')
+    info(f"Cloning repo to '{str(tdir)}' to checkout tag '{tag}'.")
+    git_cmd = ['git','clone',str(root),str(tdir)]
+    res = subprocess.run(git_cmd)
+    if res.returncode != 0:
+      error(f"There was an error cloning repo to '{str(tdir)}'. Exiting.")
+      return 1
+    os.chdir(tdir)
+    git_cmd = ['git','checkout',tag]
+    res = subprocess.run(git_cmd)
+    if res.returncode != 0:
+      error(f"There was an error checking out '{tag}'. Does the tag exists? Exiting.")
+      os.chdir(odir)
+      return 1
+
+    ctx.invoke(configure,release=True,install_prefix=directory)
+    ctx.invoke(build,release=True,extra_cmake_build_options=['--target','install'])
+
+    os.chdir(odir)
 
 
 @main.command(help="Debug a Clark project unit tests.")
