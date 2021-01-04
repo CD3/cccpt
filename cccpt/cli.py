@@ -45,7 +45,7 @@ def main(ctx,config,local_config_only,build_dir,verbose):
       click.echo(f"Reading configuration from {str(file)}.")
     conf = yaml.safe_load(file.read_text())
     if conf is not None:
-      obj.update(conf)
+      merge(obj,conf)
 
   for k in obj.get('environment',{}):
     os.environ[k] = str(env[k])
@@ -632,16 +632,41 @@ def install_conan_recipes(ctx,url,home):
   return ret
 
 
-@main.command(help="Get a copy of a project.")
+@main.command()
 @click.argument("name")
 @click.option("--remote", "-r", multiple=True,help="Specify the remote to look for project named NAME.")
+@click.option("--print-errors/--no-print-errors", "-e/-n", help="Print output from failed commands.")
 @click.pass_context
-def get(ctx,name,remote):
+def get(ctx,name,remote,print_errors):
+  """
+  Get a copy of a project.
+
+  This command will attempt to clone or copy a project given by NAME from all remotes listed in the configuration
+  file. For example, given the configuration file
+
+  project:
+    remotes:
+      - "git@github.com:CD3"
+      - "git@github.com:"
+      - "git@gitlab.com:"
+      - "/home/me/projects"
+
+  > ccc get SuperProject
+
+  will look try to clone the project using
+
+  git@github.com:CD3/SuperProject
+  git@github.com:/SuperProject
+  git@gitlab.com:/SuperProject
+  /home/me/projects/SuperProject
+
+  It will also try to do a simple copy of /home/me/projects/SuperProject if it exists and failed to clone.
+  """
   if not remote and not '/project/remotes' in ctx.obj:
-    click.echo(click.style(f"Did not find any remotes to look for {name} project in.",fg="red"))
-    click.echo(click.style(f"You need to either specify a remote to use with --remote url,",fg="red"))
-    click.echo(click.style(f"or add a section named /project/remotes that contains a list of remote urls,",fg="red"))
-    click.echo(click.style(f"to one of the project configuration files.",fg="red"))
+    error(f"Did not find any remotes to look for {name} project in.")
+    error(f"You need to either specify a remote to use with --remote url,")
+    error(f"or add a section named /project/remotes that contains a list of remote urls,")
+    error(f"to one of the project configuration files.")
     return 1
   
   if len(remote) < 1:
@@ -651,31 +676,37 @@ def get(ctx,name,remote):
 
   failed_remotes = []
   success_remote = None
+  error_messages = []
   for r in remote:
     parsed_url = urllib.parse.urlparse(r)
     if parsed_url.scheme in ['','file']:
         src = (Path(parsed_url.path)/name)
         dest = (Path('.')/name)
         if src == dest:
-          click.echo(click.style("Cannot clone/copy project into itself.",fg="red"))
+          error("Cannot clone/copy project into itself.")
           return 1
         if dest.exists():
-          click.echo(click.style("Project directory already exists. Remove it or change to a different directory.",fg="red"))
+          error("Project directory already exists. Remove it or change to a different directory.")
           return 1
         try:
-          cmd = [git,'ls-remote',str(Path(parsed_url.path)/name),name]
+          cmd = [git,'ls-remote',str(Path(parsed_url.path)/name)]
           output = subprocess.check_output(cmd,stderr=subprocess.STDOUT)
-          if output.returncode == 0:
-            cmd = [git,'clone',str(Path(parsed_url.path)/name),name]
-            output = subprocess.check_output(cmd,stderr=subprocess.STDOUT)
-            success_remote = ('clone',src)
-            break
-        except:
-          try:
-            shutil.copytree(src,dest)
-            success_remote = ('copy',src)
-            break
-          except:
+          cmd = [git,'clone',str(Path(parsed_url.path)/name),name]
+          output = subprocess.check_output(cmd,stderr=subprocess.STDOUT)
+          success_remote = ('clone',src)
+          break
+        except Exception as e:
+          error_messages.append(str(e))
+          error_messages.append(e.output)
+          if src.is_dir():
+            try:
+              shutil.copytree(src,dest)
+              success_remote = ('copy',src)
+              break
+            except Exception as e:
+              error_messages.append(str(e))
+              failed_remotes.append(src)
+          else:
             failed_remotes.append(src)
     else:
       click.echo(click.style(f"Unknown scheme {parsed_url.scheme} in URL.",fg="red"))
@@ -688,7 +719,66 @@ def get(ctx,name,remote):
     click.echo(click.style(f"Fail: could not retrieve {name} from any remotes.",fg='red'))
     click.echo(click.style(f"  Tried the following:",fg='red'))
     for f in failed_remotes:
-      click.echo(click.style(f"    - {f}",fg='red'))
+      error(f"    - {f}")
+    if print_errors:
+      for output in error_messages:
+        info(output)
+    else:
+      error("To see error output, use the --print-errors option.")
+
+@main.command()
+@click.argument("name")
+@click.option("--remote", "-r", multiple=True,help="Specify the remote to look for project named NAME.")
+@click.option("--tags", "-t",is_flag=True,help="Pass --tags option to git ls-remote command.")
+@click.option("--heads", "-h",is_flag=True,help="Pass --heads option to git ls-remote command.")
+@click.option("--all/--first-only", "-a/-f",help="Try to run `git ls-remote` on all remotes.")
+@click.option("--print-errors/--no-print-errors", "-e/-n",help="Print error messages.")
+@click.pass_context
+def ls_remote(ctx,name,remote,tags,heads,all,print_errors):
+  '''
+  Search for a project given by NAME and run `git ls-remote` on it.
+  '''
+  if not remote and not '/project/remotes' in ctx.obj:
+    error(f"Did not find any remotes to look for {name} project in.")
+    error(f"You need to either specify a remote to use with --remote url,")
+    error(f"or add a section named /project/remotes that contains a list of remote urls,")
+    error(f"to one of the project configuration files.")
+    return 1
+  
+  if len(remote) < 1:
+    remote = ctx.obj['/project/remotes']
+
+  git = ctx.obj.get('/project/commands/git','git')
+
+  for r in remote:
+    parsed_url = urllib.parse.urlparse(r)
+    if parsed_url.scheme in ['','file']:
+        src = (Path(parsed_url.path)/name)
+        try:
+          cmd = [git,'ls-remote']
+          if tags:
+            cmd.append('--tags')
+          if heads:
+            cmd.append('--heads')
+          cmd.append(str(src))
+          output = subprocess.check_output(cmd,stderr=subprocess.STDOUT)
+          sucess(f"Sucess: found project at {str(src)}.")
+          info(output)
+          if not all:
+            break
+        except subprocess.CalledProcessError as e:
+          error(f"Did not find project at {str(src)}.")
+          if print_errors:
+            info(str(e))
+            info(str(e.output.decode(encoding)))
+        except Exception as e:
+          error(f"Did not find project at {str(src)}.")
+          if print_errors:
+            info(str(e))
+    else:
+      error(f"Unknown scheme {parsed_url.scheme} in URL.")
+      continue
+
 
 @main.command(help="Tag current commit for release after running unit tests and any pre-release test scripts.")
 @click.argument("tag")
@@ -962,6 +1052,20 @@ def load_conan_buildinfo(path):
         v = env_list_sep.join(v) + env_list_sep + os.environ.get(k,'')
       os.environ[k] = v
 
+def merge(a, b, path=None):
+  '''Merge nested dictionary 'b' into dictionary 'a'.'''
+  if path is None: path = []
+  for key in b:
+      if key in a:
+          if isinstance(a[key], dict) and isinstance(b[key], dict):
+              merge(a[key], b[key], path + [str(key)])
+          elif a[key] == b[key]:
+              pass # same leaf value
+          else:
+              raise Exception('Conflict at %s' % '.'.join(path + [str(key)]))
+      else:
+          a[key] = b[key]
+  return a
 
 
 class NewProjectBuilder:
