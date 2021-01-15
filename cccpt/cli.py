@@ -26,13 +26,16 @@ import hashlib
 locale.setlocale(locale.LC_ALL,'')
 encoding = locale.getpreferredencoding()
 
-@click.group(help="Clark's CMake, Conan, and C++ Project Tools.",context_settings=dict(ignore_unknown_options=True))
+@click.group(context_settings=dict(ignore_unknown_options=True))
 @click.option("--config","-c",default=".project.yml",help="Configuration file storing default options.")
 @click.option("--local-config-only","-l",is_flag=True,help="Do not look for global configuration files in parent directories.")
 @click.option("--build-dir","-b",help="Specify the build directory to use. By default, the build directory is computed.")
 @click.option("--verbose","-v",is_flag=True,help="Print verbose messages.")
 @click.pass_context
 def main(ctx,config,local_config_only,build_dir,verbose):
+  '''
+  Clark's Conan, CMake, and C++ Project Tools.
+  '''
 
   max_height = None
   if local_config_only:
@@ -66,7 +69,7 @@ def main(ctx,config,local_config_only,build_dir,verbose):
   
 
 
-@main.command(help="Configure a CMake project.")
+@main.command()
 @click.option("--release/--debug","-R/-D",help="Configure for release mode or debug mode.")
 @click.option("--install-prefix","-i",help="Specify the install directory.")
 @click.option("--extra-cmake-configure-options",multiple=True,help="Extra options to pass to configure step.")
@@ -74,6 +77,9 @@ def main(ctx,config,local_config_only,build_dir,verbose):
 @click.option("--generator",help="Specify the generator to use.")
 @click.pass_context
 def configure(ctx,release,install_prefix,extra_cmake_configure_options,extra_conan_install_options,generator):
+  '''
+  Configure a CMake project.
+  '''
 
   if extra_cmake_configure_options is None or len(extra_cmake_configure_options) < 1:
     extra_cmake_configure_options = ctx.obj.get("/project/configure/extra-cmake-configure-options",[])
@@ -147,7 +153,7 @@ def configure(ctx,release,install_prefix,extra_cmake_configure_options,extra_con
 
   return 0
 
-@main.command(help="Build a CMake project.")
+@main.command()
 @click.option("--release/--debug","-R/-D",help="Build release mode or debug mode.")
 @click.option("--extra-cmake-build-options",multiple=True,help="Extra options to pass to build step.")
 @click.option("--target","-t",help="Build specific target.")
@@ -155,6 +161,9 @@ def configure(ctx,release,install_prefix,extra_cmake_configure_options,extra_con
 @click.option("--parallel","-j",default=-1,help="Run the build command in with INTEGER parallel jobs if possible.")
 @click.pass_context
 def build(ctx,release,extra_cmake_build_options,run_configure,target,parallel):
+  '''
+  Build a CMake project.
+  '''
 
   if extra_cmake_build_options is None or len(extra_cmake_build_options) < 1:
     extra_cmake_build_options = ctx.obj.get("project/build/extra-cmake-build-options",[])
@@ -189,17 +198,21 @@ def build(ctx,release,extra_cmake_build_options,run_configure,target,parallel):
 
 
 
-@main.command(help="Test a Clark project by running unit tests.")
+@main.command()
 @click.option("--release/--debug","-R/-D",help="Test release mode or debug mode.")
 @click.option("--match","-k",help="Only run test executable matching TEXT.")
 @click.option("--skip-build/--run-build","-s/-b",help="Skip build phase.")
 @click.pass_context
 def test(ctx,release,match,skip_build):
+  '''
+  Test a Clark project by running unit tests.
+  '''
   if not skip_build:
     ret = ctx.invoke(build,release=release)
     if ret != 0:
       click.echo(click.style(f"Build phase returned non-zero, indicating that there was an error. Skipping test phase.",fg="red"))
       return ret
+  
 
   build_dir = ctx.obj.get("/project/build-dir",None)
   if build_dir is None:
@@ -439,7 +452,7 @@ def new(ctx, name):
 @click.option("--conan-recipe-file", "-r", help="Conan recipe file.")
 @click.option("--install-prefix", "-i", help="Specify the install directory.")
 @click.pass_context
-def make_conan_editable_package(ctx,conan_package_reference,conan_recipe_file):
+def make_conan_editable_package(ctx,conan_package_reference,conan_recipe_file,install_prefix):
   '''
   Create a Conan editable package from a project.
 
@@ -473,6 +486,8 @@ def make_conan_editable_package(ctx,conan_package_reference,conan_recipe_file):
   build_dir = get_build_dir(Path(),False)
   build_dir = build_dir.parent / (build_dir.name + "-conan_editable_package")
   install_dir = build_dir/"INSTALL"
+  if install_prefix:
+    install_dir = Path(install_prefix)
 
   conan = ctx.obj.get('/project/commands/conan','conan')
 
@@ -782,9 +797,10 @@ def ls_remote(ctx,name,remote,tags,heads,all,print_errors):
 
 @main.command(help="Tag current commit for release after running unit tests and any pre-release test scripts.")
 @click.argument("tag")
-@click.option("--dirty-ok","-d",help="Dont error out if working directory is not clean.")
+@click.option("--dirty-ok","-d",is_flag=True,help="Don't error out if working directory is not clean.")
+@click.option("--dry-run","-n",is_flag=True,help="Don't actually tag, just run checks.")
 @click.pass_context
-def tag_for_release(ctx,tag,dirty_ok):
+def tag_for_release(ctx,tag,dirty_ok,dry_run):
 
   git = ctx.obj.get('/project/commands/git','git')
   tags = subprocess.check_output([git,'tag']).decode(encoding).split('\n')
@@ -807,7 +823,11 @@ def tag_for_release(ctx,tag,dirty_ok):
     error("Unit tests did not pass. Exiting now!")
     return 1
 
-  hook_patterns = ["**/pre-tag-release.sh"]
+  hook_patterns = []
+  if platform.system().lower() == "linux":
+    hook_patterns = ["**/pre-tag-release.sh"]
+  if platform.system().lower() == "windows":
+    hook_patterns = ["**/pre-tag-release.bat"]
   for hook_pattern in hook_patterns:
     hooks = root.glob(hook_pattern)
     for hook in hooks:
@@ -823,8 +843,8 @@ def tag_for_release(ctx,tag,dirty_ok):
 
 
   sucess("All tests passed. Tagging commit.")
-  subprocess.run([git,'tag',tag])
-# util functions
+  if not dry_run:
+    subprocess.run([git,'tag',tag])
 
 
 @main.command(help="Open a C++ project to start editing code. Only useful for IDE users.")
