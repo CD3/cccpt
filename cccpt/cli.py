@@ -29,10 +29,13 @@ encoding = locale.getpreferredencoding()
 @click.group(context_settings=dict(ignore_unknown_options=True))
 @click.option("--config","-c",default=".project.yml",help="Configuration file storing default options.")
 @click.option("--local-config-only","-l",is_flag=True,help="Do not look for global configuration files in parent directories.")
+@click.option("--root-dir","-b",help="Specify the project root directory to use. By default, the root directory is determined from the git root directory.")
 @click.option("--build-dir","-b",help="Specify the build directory to use. By default, the build directory is computed.")
+@click.option("--cmake-dir","-b",help="Specify the directory containing the CMakeLists.txt file to use. By default, the project root is used.")
+@click.option("--conan-dir","-b",help="Specify the directory containing the conanfile.txt or conanfile.py file to use. By default, the project root is used.")
 @click.option("--verbose","-v",is_flag=True,help="Print verbose messages.")
 @click.pass_context
-def main(ctx,config,local_config_only,build_dir,verbose):
+def main(ctx,config,local_config_only,root_dir,build_dir,cmake_dir,conan_dir,verbose):
   '''
   Clark's Conan, CMake, and C++ Project Tools.
   '''
@@ -56,7 +59,19 @@ def main(ctx,config,local_config_only,build_dir,verbose):
   ctx.obj = fspathtree(obj)
 
   if build_dir:
-    ctx.obj['/project/build-dir'] = build_dir
+    ctx.obj['/project/build-dir'] = Path(build_dir).resolve()
+  if cmake_dir:
+    ctx.obj['/project/cmake-dir'] = Path(cmake_dir).resolve()
+  if conan_dir:
+    ctx.obj['/project/conan-dir'] = Path(conan_dir).resolve()
+
+  if root_dir:
+    ctx.obj['/project/root-dir'] = Path(root_dir).resolve()
+  else:
+    try:
+      ctx.obj['/project/root-dir'] = get_project_root(Path())
+    except:
+      ctx.obj['/project/root-dir'] = Path().resolve()
 
   ctx.obj['/project/verbose'] = verbose
   ctx.obj['/project/config_files'] = config_files
@@ -88,22 +103,22 @@ def configure(ctx,release,install_prefix,extra_cmake_configure_options,extra_con
 
   build_type = get_build_type_str(release)
 
-  root_dir = get_project_root(Path())
-  build_dir = ctx.obj.get("/project/build-dir",None)
-  if build_dir is None:
-    build_dir = get_build_dir(Path(),release)
-  else:
-    build_dir = Path(build_dir)
-  build_dir.mkdir(parents=True,exist_ok=True)
+  root_dir = ctx.obj['/project/root-dir']
+  build_dir = ctx.obj.get("/project/build-dir",get_build_dir(Path(),release,root_dir))
+  cmake_dir = ctx.obj.get("/project/cmake-dir",root_dir)
+  conan_dir = ctx.obj.get("/project/conan-dir",root_dir)
 
+
+  build_dir.mkdir(parents=True,exist_ok=True)
 
   conan_file = build_dir/"conanfile.py"
   if not conan_file.exists():
     conan_file = build_dir/"conanfile.txt"
   if not conan_file.exists():
-    conan_file = root_dir/"conanfile.py"
+    conan_file = conan_dir/"conanfile.py"
   if not conan_file.exists():
-    conan_file = root_dir/"conanfile.txt"
+    conan_file = conan_dir/"conanfile.txt"
+  print(conan_file)
 
   if conan_file.exists():
     click.echo(click.style(f"Using {str(conan_file)} to install dependencies with conan.",fg="green"))
@@ -114,7 +129,7 @@ def configure(ctx,release,install_prefix,extra_cmake_configure_options,extra_con
     if result.returncode != 0:
       return result.returncode
 
-  cmake_file = root_dir/"CMakeLists.txt"
+  cmake_file = cmake_dir/"CMakeLists.txt"
   if cmake_file.exists():
     cmake = ctx.obj.get('/project/commands/cmake','cmake')
     cmake_cmd = [cmake,str(cmake_file.parent)]
@@ -168,11 +183,8 @@ def build(ctx,release,extra_cmake_build_options,run_configure,target,parallel):
   if extra_cmake_build_options is None or len(extra_cmake_build_options) < 1:
     extra_cmake_build_options = ctx.obj.get("project/build/extra-cmake-build-options",[])
 
-  build_dir = ctx.obj.get("/project/build-dir",None)
-  if build_dir is None:
-    build_dir = get_build_dir(Path(),release)
-  else:
-    build_dir = Path(build_dir)
+  root_dir = ctx.obj['/project/root-dir']
+  build_dir = ctx.obj.get("/project/build-dir",get_build_dir(Path(),release,root_dir))
 
   build_type = get_build_type_str(release)
 
@@ -214,11 +226,8 @@ def test(ctx,release,match,skip_build):
       return ret
   
 
-  build_dir = ctx.obj.get("/project/build-dir",None)
-  if build_dir is None:
-    build_dir = get_build_dir(Path(),release)
-  else:
-    build_dir = Path(build_dir)
+  root_dir = ctx.obj['/project/root-dir']
+  build_dir = ctx.obj.get("/project/build-dir",get_build_dir(Path(),release,root_dir))
 
   test_executables = get_list_of_test_executables_in_path(build_dir)
   tests_to_run = test_executables['all']
@@ -287,11 +296,9 @@ def install(ctx,directory,tag):
 @click.option("--match","-k",help="Only run test executable matching TEXT.")
 @click.pass_context
 def debug(ctx,match):
-  build_dir = ctx.obj.get("/project/build-dir",None)
-  if build_dir is None:
-    build_dir = get_build_dir(Path(),False)
-  else:
-    build_dir = Path(build_dir)
+  root_dir = ctx.obj['/project/root-dir']
+  build_dir = ctx.obj.get("/project/build-dir",get_build_dir(Path(),release,root_dir))
+
   ctx.obj["/project/build-dir"] = build_dir
   ret = ctx.invoke(build,release=False)
   if ret != 0:
@@ -342,6 +349,13 @@ def debug(ctx,match):
 @click.pass_context
 def clean(ctx,all):
 
+  try:
+    root_dir = get_project_root(Path())
+  except Exception as e:
+    error("The clean command can only be ran from within a project directory. Could not determine project root!")
+    error(str(e))
+    return 1
+
   for build_dir in Path(".").glob("build-*"):
     click.echo(f"Removing {str(build_dir)}.")
     try:
@@ -362,7 +376,11 @@ def clean(ctx,all):
 @click.pass_context
 def info(ctx):
   cwd = Path()
-  root = get_project_root(Path())
+  try:
+    root = get_project_root(Path())
+  except:
+    error("The info command can only be ran from within a project directory. Could not determine project root.")
+    return 1
   project_name = get_project_name(cwd)
   build_dir_rel = get_build_dir(Path(),True)
   build_dir_deb = get_build_dir(Path(),False)
@@ -482,7 +500,7 @@ def make_conan_editable_package(ctx,conan_package_reference,conan_recipe_file,in
 
   > conan editable remove CONAN_PACKAGE_REFERENCE
   '''
-  root_dir = get_project_root(Path())
+  root_dir = ctx.obj['/project/root-dir']
   build_dir = get_build_dir(Path(),False)
   build_dir = build_dir.parent / (build_dir.name + "-conan_editable_package")
   install_dir = build_dir/"INSTALL"
@@ -900,7 +918,11 @@ def info(msg):
   click.echo(msg)
 
 def get_project_root(path):
-  dir = subprocess.check_output(["git","rev-parse","--show-toplevel"],cwd=path)
+  try:
+    dir = subprocess.check_output(["git","rev-parse","--show-toplevel"],cwd=path,stderr=subprocess.STDOUT)
+  except:
+    raise Exception(f"Could not determine project root directlry for {str(path)}")
+
   dir = dir.strip().decode(encoding)
   if dir == "":
     raise Exception(f"Could not determine project root directlry for {str(path)}")
@@ -974,9 +996,10 @@ def get_build_type_str(is_release):
     build_type = "Release"
   return build_type
 
-def get_build_dir(path,is_release):
+def get_build_dir(path,is_release,root_dir = None):
   build_type = get_build_type_str(is_release)
-  root_dir = get_project_root(path)
+  if not root_dir:
+    root_dir = get_project_root(path)
   platorm_name = platform.system()
   build_dir = root_dir/f"build-{build_type.lower()}-{platorm_name.lower()}"
   return build_dir
