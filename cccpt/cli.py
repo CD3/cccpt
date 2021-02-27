@@ -3,6 +3,7 @@ import yaml
 from fspathtree import fspathtree
 
 import os
+import sys
 import stat
 import fnmatch
 import shutil
@@ -27,12 +28,12 @@ locale.setlocale(locale.LC_ALL,'')
 encoding = locale.getpreferredencoding()
 
 @click.group(context_settings=dict(ignore_unknown_options=True))
-@click.option("--config","-c",default=".project.yml",help="Configuration file storing default options.")
+@click.option("--config","-c",type=click.Path(dir_okay=False),default=".project.yml",help="Configuration file storing default options.")
 @click.option("--local-config-only","-l",is_flag=True,help="Do not look for global configuration files in parent directories.")
-@click.option("--root-dir",help="Specify the project root directory to use. By default, the root directory is determined from the git root directory.")
-@click.option("--build-dir",help="Specify the build directory to use. By default, the build directory is computed.")
-@click.option("--cmake-dir",help="Specify the directory containing the CMakeLists.txt file to use. By default, the project root is used.")
-@click.option("--conan-dir",help="Specify the directory containing the conanfile.txt or conanfile.py file to use. By default, the project root is used.")
+@click.option("--root-dir",type=click.Path(file_okay=False,exists=True,resolve_path=True),help="Specify the project root directory to use. By default, the root directory is determined from the git root directory.")
+@click.option("--build-dir",type=click.Path(resolve_path=True),help="Specify the build directory to use. By default, the build directory is computed.")
+@click.option("--cmake-dir",type=click.Path(file_okay=False,exists=True,resolve_path=True),help="Specify the directory containing the CMakeLists.txt file to use. By default, the project root is used.")
+@click.option("--conan-dir",type=click.Path(file_okay=False,exists=True,resolve_path=True),help="Specify the directory containing the conanfile.txt or conanfile.py file to use. By default, the project root is used.")
 @click.option("--verbose","-v",is_flag=True,help="Print verbose messages.")
 @click.pass_context
 def main(ctx,config,local_config_only,root_dir,build_dir,cmake_dir,conan_dir,verbose):
