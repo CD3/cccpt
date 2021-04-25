@@ -23,6 +23,7 @@ import json
 import pprint
 import time
 import hashlib
+import shlex
 
 locale.setlocale(locale.LC_ALL,'')
 encoding = locale.getpreferredencoding()
@@ -119,7 +120,7 @@ def configure(ctx,release,install_prefix,extra_cmake_configure_options,extra_con
     conan_file = conan_dir/"conanfile.py"
   if not conan_file.exists():
     conan_file = conan_dir/"conanfile.txt"
-  print(conan_file)
+  print("Found conanfile:",conan_file)
 
   if conan_file.exists():
     click.echo(click.style(f"Using {str(conan_file)} to install dependencies with conan.",fg="green"))
@@ -214,9 +215,10 @@ def build(ctx,release,extra_cmake_build_options,run_configure,target,parallel):
 @main.command()
 @click.option("--release/--debug","-R/-D",help="Test release mode or debug mode.")
 @click.option("--match","-k",help="Only run test executable matching TEXT.")
+@click.option("--args","-a",help="Pass arguments to test executables(s).")
 @click.option("--skip-build/--run-build","-s/-b",help="Skip build phase.")
 @click.pass_context
-def test(ctx,release,match,skip_build):
+def test(ctx,release,match,args,skip_build):
   '''
   Test a Clark project by running unit tests.
   '''
@@ -246,7 +248,10 @@ def test(ctx,release,match,skip_build):
   for file in tests_to_run:
     if not match or str(file).find(match) > -1:
       click.echo(f"Running {str(file)}")
-      result = subprocess.run(file,cwd=build_dir)
+      cmd = [file]
+      if args:
+        cmd += shlex.split(args)
+      result = subprocess.run(cmd,cwd=build_dir)
       ret += abs(result.returncode)
 
   return ret
@@ -298,7 +303,7 @@ def install(ctx,directory,tag):
 @click.pass_context
 def debug(ctx,match):
   root_dir = ctx.obj['/project/root-dir']
-  build_dir = ctx.obj.get("/project/build-dir",get_build_dir(Path(),release,root_dir))
+  build_dir = ctx.obj.get("/project/build-dir",get_build_dir(Path(),False,root_dir))
 
   ctx.obj["/project/build-dir"] = build_dir
   ret = ctx.invoke(build,release=False)
@@ -821,6 +826,7 @@ def ls_remote(ctx,name,remote,tags,heads,all,print_errors):
 @click.pass_context
 def tag_for_release(ctx,tag,dirty_ok,dry_run):
 
+
   git = ctx.obj.get('/project/commands/git','git')
   tags = subprocess.check_output([git,'tag']).decode(encoding).split('\n')
   if tag in tags:
@@ -835,6 +841,25 @@ def tag_for_release(ctx,tag,dirty_ok,dry_run):
       return 1
 
   root = get_project_root(Path())
+
+  if (root/"version.txt").is_file():
+    version_txt_tag = (root/"version.txt").read_text().strip()
+    # if tag != version_txt_tag:
+    #   error(f"{tag} does not match what was found in version.txt ({version_txt_tag}).")
+    #   sys.exit(1)
+    if not tag.startswith(version_txt_tag):
+      error(f"{tag} does not begin with what was found in version.txt ({version_txt_tag}).")
+      sys.exit(1)
+
+
+
+
+
+
+
+
+
+
   tdir = Path(tempfile.mkdtemp())
   ctx.obj['/project/build-dir'] = tdir
   ret = ctx.invoke(test,release=True)
