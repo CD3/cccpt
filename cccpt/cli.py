@@ -28,6 +28,24 @@ import shlex
 locale.setlocale(locale.LC_ALL,'')
 encoding = locale.getpreferredencoding()
 
+
+
+def error(msg):
+  click.echo(click.style(msg,fg='red'))
+
+def sucess(msg):
+  click.echo(click.style(msg,fg='green'))
+
+def info(msg):
+  click.echo(msg)
+
+
+
+
+
+
+
+
 @click.group(context_settings=dict(ignore_unknown_options=True))
 @click.option("--config","-c",type=click.Path(dir_okay=False),default=".project.yml",help="Configuration file storing default options.")
 @click.option("--local-config-only","-l",is_flag=True,help="Do not look for global configuration files in parent directories.")
@@ -50,7 +68,7 @@ def main(ctx,config,local_config_only,root_dir,build_dir,cmake_dir,conan_dir,ver
   obj = dict()
   for file in config_files:
     if verbose:
-      click.echo(f"Reading configuration from {str(file)}.")
+      info(f"Reading configuration from {str(file)}.")
     conf = yaml.safe_load(file.read_text())
     if conf is not None:
       merge(obj,conf)
@@ -59,6 +77,11 @@ def main(ctx,config,local_config_only,root_dir,build_dir,cmake_dir,conan_dir,ver
     os.environ[k] = str(env[k])
 
   ctx.obj = fspathtree(obj)
+  if verbose:
+    ctx.obj['/app/verbose'] = True
+  else:
+    ctx.obj['/app/verbose'] = False
+
 
   if build_dir:
     ctx.obj['/project/build-dir'] = Path(build_dir).resolve()
@@ -75,7 +98,6 @@ def main(ctx,config,local_config_only,root_dir,build_dir,cmake_dir,conan_dir,ver
     except:
       ctx.obj['/project/root-dir'] = Path().resolve()
 
-  ctx.obj['/project/verbose'] = verbose
   ctx.obj['/project/config_files'] = config_files
 
 
@@ -123,10 +145,11 @@ def configure(ctx,release,install_prefix,extra_cmake_configure_options,extra_con
   print("Found conanfile:",conan_file)
 
   if conan_file.exists():
-    click.echo(click.style(f"Using {str(conan_file)} to install dependencies with conan.",fg="green"))
+    sucess(f"Using {str(conan_file)} to install dependencies with conan.")
     conan  = ctx.obj.get('/project/commands/conan','conan')
-    conan_cmd = [conan,"install",conan_file,"--build=missing","-s",f"build_type={build_type}"]
+    conan_cmd = [conan,"install",str(conan_file),"--build=missing","-s",f"build_type={build_type}"]
     conan_cmd += extra_conan_install_options
+    info(f"Running: {conan_cmd}")
     result = subprocess.run(conan_cmd,cwd=build_dir)
     if result.returncode != 0:
       return result.returncode
@@ -148,9 +171,13 @@ def configure(ctx,release,install_prefix,extra_cmake_configure_options,extra_con
         if len(default_generators) == 1:
           generator = re.sub(b"\s*=\s*.*$",b"",re.sub(br"^\*\s*",b"",default_generators[0]))
           generator = generator.decode(encoding)
-    else:
+
+    if generator:
       cmake_cmd.append(f"-G")
       cmake_cmd.append(generator)
+
+    if ctx.obj['/app/verbose']:
+      info(f"Using Generator: {generator}")
 
     if generator and generator.startswith("Visual Studio"):
       if platform.architecture()[0] == '64bit':
@@ -165,6 +192,7 @@ def configure(ctx,release,install_prefix,extra_cmake_configure_options,extra_con
     load_conan_buildinfo(build_dir)
     load_conan_environment(build_dir)
 
+    info(f"Running: {cmake_cmd}")
     result = subprocess.run(cmake_cmd,cwd=build_dir)
     return result.returncode
 
@@ -225,7 +253,7 @@ def test(ctx,release,match,args,skip_build):
   if not skip_build:
     ret = ctx.invoke(build,release=release)
     if ret != 0:
-      click.echo(click.style(f"Build phase returned non-zero, indicating that there was an error. Skipping test phase.",fg="red"))
+      error(f"Build phase returned non-zero, indicating that there was an error. Skipping test phase.")
       return ret
   
 
@@ -236,7 +264,7 @@ def test(ctx,release,match,args,skip_build):
   tests_to_run = test_executables['all']
 
   if len(tests_to_run) < 1:
-    click.echo(f"Did not find any test executables in {str(build_dir)}.")
+    info(f"Did not find any test executables in {str(build_dir)}.")
     return 1
 
   # filter out duplicates
@@ -247,7 +275,7 @@ def test(ctx,release,match,args,skip_build):
   ret = 0
   for file in tests_to_run:
     if not match or str(file).find(match) > -1:
-      click.echo(f"Running {str(file)}")
+      info(f"Running {str(file)}")
       cmd = [file]
       if args:
         cmd += shlex.split(args)
@@ -308,14 +336,14 @@ def debug(ctx,match):
   ctx.obj["/project/build-dir"] = build_dir
   ret = ctx.invoke(build,release=False)
   if ret != 0:
-    click.echo(click.style(f"Build phase returned non-zero, indicating that there was an error. Skipping test phase.",fg="red"))
+    error(f"Build phase returned non-zero, indicating that there was an error. Skipping test phase.")
     return ret
 
   test_executables = get_list_of_test_executables_in_path(build_dir)
   tests_to_run = test_executables['debug']
 
   if len(tests_to_run) < 1:
-    click.echo("Did not find any test executables.")
+    info("Did not find any test executables.")
     return 1
 
   rrexec = shutil.which('rr')
@@ -326,9 +354,9 @@ def debug(ctx,match):
     kernel_perf_event_paranoid = 10
 
   if kernel_perf_event_paranoid > 1:
-    click.echo(click.style(f"The kernel perf_event_paranoid setting is {kernel_perf_event_paranoid}, but it must be <= 1 to run rr.",fg='red'))
-    click.echo(f"You can changes this by running:")
-    click.echo(f"sudo bash -c 'echo 1 > /proc/sys/kernel/perf_event_paranoid'")
+    error(f"The kernel perf_event_paranoid setting is {kernel_perf_event_paranoid}, but it must be <= 1 to run rr.")
+    warn(f"You can changes this by running:")
+    warn(f"sudo bash -c 'echo 1 > /proc/sys/kernel/perf_event_paranoid'")
     return 1
     
 
@@ -363,7 +391,7 @@ def clean(ctx,all):
     return 1
 
   for build_dir in Path(".").glob("build-*"):
-    click.echo(f"Removing {str(build_dir)}.")
+    info(f"Removing {str(build_dir)}.")
     try:
       rmtree(build_dir)
     except:
@@ -391,20 +419,20 @@ def info(ctx):
   build_dir_rel = get_build_dir(Path(),True)
   build_dir_deb = get_build_dir(Path(),False)
 
-  click.echo(f"Project Name: {project_name}")
-  click.echo(f"Root Directory: {root}")
-  click.echo(f"Build Directory: (Release Mode): {build_dir_rel}")
-  click.echo(f"Build Directory: (Debug Mode): {build_dir_deb}")
+  info(f"Project Name: {project_name}")
+  info(f"Root Directory: {root}")
+  info(f"Build Directory: (Release Mode): {build_dir_rel}")
+  info(f"Build Directory: (Debug Mode): {build_dir_deb}")
 
   cmakelists = root.glob("**/CMakeLists.txt")
-  click.echo(f"Dependencies referenced by CMake")
+  info(f"Dependencies referenced by CMake")
   for file in cmakelists:
-    click.echo(f"{str(file.relative_to(root))}")
+    info(f"{str(file.relative_to(root))}")
     text = file.read_text()
     for match in re.findall("find_package\s*\(\s*([^\s]+)",text):
-      click.echo(f"  {match}")
+      info(f"  {match}")
   
-  click.echo("Configuration:")
+  info("Configuration:")
   pprint.pprint(ctx.obj.tree)
     
 
@@ -521,7 +549,7 @@ def make_conan_editable_package(ctx,conan_package_reference,conan_recipe_file,in
   if conan_recipe_file:
     conan_recipe_file = Path(conan_recipe_file).resolve()
     if not conan_recipe_file.exists():
-      click.echo(click.style(f"Conan recipe file '{str(conan_recipe_file)}' does not exist. Conan requires a valid conanfile.py file to make a package editable.",fg='red'))
+      error(f"Conan recipe file '{str(conan_recipe_file)}' does not exist. Conan requires a valid conanfile.py file to make a package editable.")
       return 1
     conan_recipe_text = conan_recipe_file.read_text()
 
@@ -539,7 +567,7 @@ def make_conan_editable_package(ctx,conan_package_reference,conan_recipe_file,in
 
 
   if conan_recipe_text is None:
-    click.echo(click.style(f"Could not find a conan recipe file. Conan requires a valid conanfile.py file to make a package editable.",fg='red'))
+    error(f"Could not find a conan recipe file. Conan requires a valid conanfile.py file to make a package editable.")
     return 1
 
 
@@ -1060,13 +1088,51 @@ def rmtree(dir):
     s.remove(path)
   shutil.rmtree(dir, onerror=del_rw)
 
+def load_environment( env ):
+  '''
+  Load a dictionary into the environment.
+
+  Given a dictionary of key/value pairs, add keys to the environment with corresponding value.
+  If the key already exists in the environment, then replace it.
+
+  If a value contain a reference to the key (i.e. PATH : "some/path"${PATH:+:PATH}), then replace
+  the reference with the current environment variable value.
+
+  If a value is a list, convert it to a string using the OS environment variable list element separator.
+  '''
+  env_list_sep = ":"
+  env_var_interp_patterns = ['${{{k}:+:${k}}}','${{{k}+:${k}}}']
+  if platform.system().lower() == "windows":
+    env_list_sep = ";"
+    env_var_interp_patterns = ["$env:{k}"]
+
+  for k in env:
+    v = env[k]
+    # if value is a list, then turn it into string
+    if type(v) is list:
+      v = env_list_sep.join(v) + env_list_sep + os.environ.get(k,'')
+
+    # do shell interpolation...
+    for pattern in env_var_interp_patterns:
+      pattern = pattern.format(k=k)
+      if k in os.environ:
+        v = v.replace(pattern,env_list_sep+os.environ[k])
+      else:
+        v = v.replace(pattern,"")
+
+    # clean...
+    # we need to unquote elements in the lst
+    v = env_list_sep.join( [ x.strip('"') for x in v.split(env_list_sep) ]    )
+
+    os.environ[k] = v
+
 
 def load_conan_environment(path):
   files_to_load = []
   if path.is_dir():
     ext = "sh"
     if platform.system().lower() == "windows":
-      ext = "bat"
+      ext = "ps1"
     files_to_load = path.glob(f'environment*.{ext}.env')
   else:
     files_to_load.append(path)
@@ -1077,26 +1143,9 @@ def load_conan_environment(path):
     env.optionxform=str # don't convert keys to lowercase
     text = '[ENV]\n' + file.read_text()
     env.read_string(text)
-    env_list_sep = ':'
-    if platform.system().lower() == "windows":
-      env_list_sep = ';'
 
-    for k in env['ENV']:
-      v = env['ENV'][k].strip('"')
+    load_environment(env['ENV'])
 
-      if f"%{k}%" in v:
-        if k in os.environ:
-          v = v.replace(f"%{k}%",os.environ[k])
-        else:
-          v = v.replace(f"%{k}%","")
-
-      if f'"${{{k}+:${k}}}' in v:
-        if k in os.environ:
-          v = v.replace(f'"${{{k}+:${k}}}',":"+os.environ[k])
-        else:
-          v = v.replace(f'"${{{k}+:${k}}}',"")
-
-      os.environ[k] = v
 
 
 def load_conan_buildinfo(path):
@@ -1109,17 +1158,24 @@ def load_conan_buildinfo(path):
   info.optionxform=str # don't convert keys to lowercase
   info.read(path)
   env_sections = list(filter( lambda s : s.startswith("ENV_"), info.sections() ))
-  env_list_sep = ':'
-  if platform.system().lower() == "windows":
-    env_list_sep = ';'
+
   for section in env_sections:
+    env = dict()
     for k in info[section]:
       v = info[section][k]
       if v.startswith('['):
         v = json.loads(v.replace("\\","\\\\"))
-      if type(v) is list:
-        v = env_list_sep.join(v) + env_list_sep + os.environ.get(k,'')
-      os.environ[k] = v
+      env[k] = v
+    load_environment(env)
+
+
+
+
+
+
+
+
+
 
 def merge(a, b, path=None):
   '''Merge nested dictionary 'b' into dictionary 'a'.'''
