@@ -1,6 +1,7 @@
 import click
 import yaml
 from fspathtree import fspathtree
+import pyparsing as pp
 
 import os
 import sys
@@ -245,8 +246,9 @@ def build(ctx,release,extra_cmake_build_options,run_configure,target,parallel):
 @click.option("--match","-k",help="Only run test executable matching TEXT.")
 @click.option("--args","-a",help="Pass arguments to test executables(s).")
 @click.option("--skip-build/--run-build","-s/-b",help="Skip build phase.")
+@click.option("--debugger",default="",help="Run test executables with a specified debugger.")
 @click.pass_context
-def test(ctx,release,match,args,skip_build):
+def test(ctx,release,match,args,skip_build,debugger):
   '''
   Test a Clark project by running unit tests.
   '''
@@ -276,7 +278,8 @@ def test(ctx,release,match,args,skip_build):
   for file in tests_to_run:
     if not match or str(file).find(match) > -1:
       info(f"Running {str(file)}")
-      cmd = [file]
+      cmd = shlex.split(debugger)
+      cmd += [str(file)]
       if args:
         cmd += shlex.split(args)
       result = subprocess.run(cmd,cwd=build_dir)
@@ -503,8 +506,9 @@ def new(ctx, name):
 @click.argument("conan-package-reference")
 @click.option("--conan-recipe-file", "-r", help="Conan recipe file.")
 @click.option("--install-prefix", "-i", help="Specify the install directory.")
+@click.option("--release", "-i", help="use a release build..")
 @click.pass_context
-def make_conan_editable_package(ctx,conan_package_reference,conan_recipe_file,install_prefix):
+def make_conan_editable_package(ctx,conan_package_reference,conan_recipe_file,install_prefix,release):
   '''
   Create a Conan editable package from a project.
 
@@ -535,7 +539,7 @@ def make_conan_editable_package(ctx,conan_package_reference,conan_recipe_file,in
   > conan editable remove CONAN_PACKAGE_REFERENCE
   '''
   root_dir = ctx.obj['/project/root-dir']
-  build_dir = get_build_dir(Path(),False)
+  build_dir = get_build_dir(Path(),release)
   build_dir = build_dir.parent / (build_dir.name + "-conan_editable_package")
   install_dir = build_dir/"INSTALL"
   if install_prefix:
@@ -572,7 +576,7 @@ def make_conan_editable_package(ctx,conan_package_reference,conan_recipe_file,in
 
 
   ctx.obj["/project/build-dir"] = build_dir
-  ctx.invoke(install,directory=install_dir)
+  ctx.invoke(install,directory=install_dir,release=release)
 
 
   Path(install_dir/'conanfile.py').write_text(conan_recipe_text)
@@ -940,8 +944,38 @@ def open(ctx,release):
   return ret.returncode
 
 
+class parsers:
+  class Catch2:
+    error_line = pp.LineStart() + pp.SkipTo(":")("filename") + pp.Literal(":") + pp.Word(pp.nums) + pp.Literal(": FAILED:")
+  class UnitTestPlusPlus:
+    error_line = pp.LineStart() + pp.SkipTo(":")("filename") + pp.Literal(":") + pp.Word(pp.nums) + pp.Literal(":") + pp.Word(pp.nums) + pp.Literal(": error:") + pp.SkipTo(pp.LineEnd())
 
 
+
+@main.command(help="Parse parse and filter unit test output.")
+@click.option("--path-filter","-p",multiple=True,help="Filter to apply to matched file paths.")
+@click.pass_context
+def filter_test_output(ctx,path_filter):
+  for line in sys.stdin:
+    line = line.strip("\n")
+    def reroot_filename(s,l,t):
+      for filter in path_filter:
+        pat,repl = filter.split("|")
+        result = re.sub(pat,repl,t[0])
+        t[0] = result
+      return t
+    parsers.Catch2.error_line.setParseAction( reroot_filename )
+    line = parsers.Catch2.error_line.transformString(line)
+    parsers.UnitTestPlusPlus.error_line.setParseAction( reroot_filename )
+    line = parsers.UnitTestPlusPlus.error_line.transformString(line)
+    print(line)
+
+
+
+
+
+
+  return 0
 
 
 
