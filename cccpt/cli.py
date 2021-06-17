@@ -25,6 +25,9 @@ import pprint
 import time
 import hashlib
 import shlex
+import fileinput
+import datetime
+import traceback
 
 locale.setlocale(locale.LC_ALL,'')
 encoding = locale.getpreferredencoding()
@@ -45,8 +48,6 @@ def info(msg):
 
 
 
-
-
 @click.group(context_settings=dict(ignore_unknown_options=True))
 @click.option("--config","-c",type=click.Path(dir_okay=False),default=".project.yml",help="Configuration file storing default options.")
 @click.option("--local-config-only","-l",is_flag=True,help="Do not look for global configuration files in parent directories.")
@@ -55,11 +56,70 @@ def info(msg):
 @click.option("--cmake-dir",type=click.Path(file_okay=False,exists=True,resolve_path=True),help="Specify the directory containing the CMakeLists.txt file to use. By default, the project root is used.")
 @click.option("--conan-dir",type=click.Path(file_okay=False,exists=True,resolve_path=True),help="Specify the directory containing the conanfile.txt or conanfile.py file to use. By default, the project root is used.")
 @click.option("--verbose","-v",is_flag=True,help="Print verbose messages.")
+@click.option("--log-commands","-L",is_flag=True,help="Write the commands that are used to a log file.")
+@click.option("--command-log-file","-f",default="ccc-commands.log",help="Filename for logging command to.")
 @click.pass_context
-def main(ctx,config,local_config_only,root_dir,build_dir,cmake_dir,conan_dir,verbose):
+def main(ctx,config,local_config_only,root_dir,build_dir,cmake_dir,conan_dir,verbose,log_commands,command_log_file):
   '''
   Clark's Conan, CMake, and C++ Project Tools.
   '''
+
+  # swap out the subprocess.run function with a version
+  # that will log 
+  command_log_file = Path(command_log_file)
+  if log_commands:
+    with command_log_file.open("a") as f:
+      f.write(f"==={datetime.datetime.now().strftime('%m/%d/%Y %H:%M:%S')}===\n")
+      f.write(f"==={shlex.join(sys.argv)}===\n")
+
+    subprocess_run = subprocess.run
+    def run_with_log(*args,**kwargs):
+      # we only want to log calls that are from this file
+      # some python functions used subprocess.run under the hood,
+      # and we don't want to log these
+      (filename,line,procname,text) = traceback.extract_stack()[-2]
+      if filename == __file__:
+        with command_log_file.open("a") as f:
+          owd = os.getcwd()
+          if 'cwd' in kwargs:
+            f.write(f"cd {kwargs['cwd']}\n")
+          cmd = ""
+          if len(args) > 0:
+            cmd = args[0]
+          if 'args' in kwargs:
+            cmd = kwargs['args']
+          f.write(shlex.join(cmd))
+          f.write("\n")
+          if 'cwd' in kwargs:
+            f.write(f"cd {owd}\n")
+      return subprocess_run(*args,**kwargs)
+    subprocess.run = run_with_log
+
+    os_chdir = os.chdir
+    def chdir_with_log(path):
+      (filename,line,procname,text) = traceback.extract_stack()[-2]
+      if filename == __file__:
+        with command_log_file.open("a") as f:
+          cmd = f"cd {path}"
+          f.write(cmd)
+          f.write("\n")
+      return os_chdir(path)
+    os.chdir = chdir_with_log
+
+    Path_mkdir = Path.mkdir
+    def mkdir_with_log(self,*args,**kwargs):
+      (filename,line,procname,text) = traceback.extract_stack()[-2]
+      if filename == __file__:
+        with command_log_file.open("a") as f:
+          cmd = ["mkdir"]
+          if "parents" in kwargs and kwargs['parents']:
+            cmd.append("-p")
+          cmd.append(f"{str(self)}")
+          f.write(shlex.join(cmd))
+          f.write("\n")
+      return Path_mkdir(self,*args,**kwargs)
+    Path.mkdir = mkdir_with_log
+
 
   max_height = None
   if local_config_only:
@@ -291,16 +351,17 @@ def test(ctx,release,match,args,skip_build,debugger):
 @main.command(help="Install a CMake project into a specified directory.")
 @click.argument("directory")
 @click.option("--tag","-t", help="Checkout tag TEXT before installing. This requires `git`, and will make a copy of the repository.")
+@click.option("--release/--debug","-R/-D",default=True,help="Install in release mode or debug mode.")
 @click.pass_context
-def install(ctx,directory,tag):
+def install(ctx,directory,tag,release):
   ctx.obj["/project/build-dir"] = ctx.obj.get('/project/build-dir', Path("build-install"))
 
   directory = Path(directory).resolve()
 
   if not tag:
     ret = 0
-    ret += ctx.invoke(configure,release=True,install_prefix=directory)
-    ret += ctx.invoke(build,release=True,extra_cmake_build_options=['--target','install'])
+    ret += ctx.invoke(configure,release=release,install_prefix=directory)
+    ret += ctx.invoke(build,release=release,extra_cmake_build_options=['--target','install'])
     return ret
 
 
@@ -323,8 +384,8 @@ def install(ctx,directory,tag):
       os.chdir(odir)
       return 1
 
-    ctx.invoke(configure,release=True,install_prefix=directory)
-    ctx.invoke(build,release=True,extra_cmake_build_options=['--target','install'])
+    ctx.invoke(configure,release=release,install_prefix=directory)
+    ctx.invoke(build,release=release,extra_cmake_build_options=['--target','install'])
 
     os.chdir(odir)
 
@@ -382,7 +443,7 @@ def debug(ctx,match):
 
 
 @main.command(help="Clean a CMake project.")
-@click.option("--all/--build-only","-a/-b",help="Only remove build directories or clean evertyghing.")
+@click.option("--all/--build-only","-a/-b",help="Only remove build directories or clean everything.")
 @click.pass_context
 def clean(ctx,all):
 
@@ -506,7 +567,7 @@ def new(ctx, name):
 @click.argument("conan-package-reference")
 @click.option("--conan-recipe-file", "-r", help="Conan recipe file.")
 @click.option("--install-prefix", "-i", help="Specify the install directory.")
-@click.option("--release", "-i", help="use a release build..")
+@click.option("--release/--debug","-R/-D",help="Install in release mode or debug mode.")
 @click.pass_context
 def make_conan_editable_package(ctx,conan_package_reference,conan_recipe_file,install_prefix,release):
   '''
@@ -539,7 +600,7 @@ def make_conan_editable_package(ctx,conan_package_reference,conan_recipe_file,in
   > conan editable remove CONAN_PACKAGE_REFERENCE
   '''
   root_dir = ctx.obj['/project/root-dir']
-  build_dir = get_build_dir(Path(),release)
+  build_dir = ctx.obj.get("/project/build-dir",get_build_dir(Path(),release,root_dir))
   build_dir = build_dir.parent / (build_dir.name + "-conan_editable_package")
   install_dir = build_dir/"INSTALL"
   if install_prefix:
@@ -576,11 +637,11 @@ def make_conan_editable_package(ctx,conan_package_reference,conan_recipe_file,in
 
 
   ctx.obj["/project/build-dir"] = build_dir
-  ctx.invoke(install,directory=install_dir,release=release)
+  ctx.invoke(install,directory=install_dir)
 
 
   Path(install_dir/'conanfile.py').write_text(conan_recipe_text)
-  subprocess.run( [conan,'editable','add',install_dir,conan_package_reference] )
+  subprocess.run( [conan,'editable','add',str(install_dir),conan_package_reference] )
 
 @main.command(help="Print all source files in a project (suitable for feeding to `entr`).")
 @click.option("--pattern","-p",multiple=True,help="Pattern used to identify a source file (can be given multiple times).")
