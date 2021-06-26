@@ -345,7 +345,7 @@ def test(ctx,release,match,args,skip_build,debugger):
       result = subprocess.run(cmd,cwd=build_dir)
       ret += abs(result.returncode)
 
-  return ret
+  sys.exit(ret)
 
 
 @main.command(help="Install a CMake project into a specified directory.")
@@ -651,7 +651,7 @@ def make_conan_editable_package(ctx,conan_package_reference,conan_recipe_file,in
 def list_sources(ctx,pattern,ignore_pattern,include_pattern):
 
   root = get_project_root(Path())
-  source_patterns = ['*.cpp','*.h','*.hpp','*.py']
+  source_patterns = ['*.cpp','*.h','*.hpp','*.py','**/CMakeLists.txt']
   source_ignore_patterns = [ '*/.git/*',str(root)+'/build*' ]
   source_include_patterns = []
 
@@ -916,8 +916,9 @@ def ls_remote(ctx,name,remote,tags,heads,all,print_errors):
 @click.argument("tag")
 @click.option("--dirty-ok","-d",is_flag=True,help="Don't error out if working directory is not clean.")
 @click.option("--dry-run","-n",is_flag=True,help="Don't actually tag, just run checks.")
+@click.option("--strict/--no-strict",default=True,help="Do strict checking before tagging.")
 @click.pass_context
-def tag_for_release(ctx,tag,dirty_ok,dry_run):
+def tag_for_release(ctx,tag,dirty_ok,dry_run,strict):
 
 
   git = ctx.obj.get('/project/commands/git','git')
@@ -937,12 +938,14 @@ def tag_for_release(ctx,tag,dirty_ok,dry_run):
 
   if (root/"version.txt").is_file():
     version_txt_tag = (root/"version.txt").read_text().strip()
-    # if tag != version_txt_tag:
-    #   error(f"{tag} does not match what was found in version.txt ({version_txt_tag}).")
-    #   sys.exit(1)
-    if not tag.startswith(version_txt_tag):
-      error(f"{tag} does not begin with what was found in version.txt ({version_txt_tag}).")
-      sys.exit(1)
+    if strict:
+      if tag != version_txt_tag:
+        error(f"{tag} does not match what was found in version.txt ({version_txt_tag}). Use --no-strict to allow the version string in version.txt to only match the beginning of the new tag.")
+        sys.exit(1)
+    else:
+      if not tag.startswith(version_txt_tag):
+        error(f"{tag} does not begin with what was found in version.txt ({version_txt_tag}).")
+        sys.exit(1)
 
 
 
