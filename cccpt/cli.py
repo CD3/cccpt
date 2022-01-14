@@ -37,7 +37,7 @@ encoding = locale.getpreferredencoding()
 def error(msg):
   click.echo(click.style(msg,fg='red'))
 
-def sucess(msg):
+def success(msg):
   click.echo(click.style(msg,fg='green'))
 
 def info(msg):
@@ -45,7 +45,11 @@ def info(msg):
 
 
 
-
+def return_or_exit(ctx, val):
+  if ctx._depth == 2:
+    ctx.exit(val)
+  else:
+    return val
 
 
 @click.group(context_settings=dict(ignore_unknown_options=True))
@@ -203,17 +207,16 @@ def configure(ctx,release,install_prefix,extra_cmake_configure_options,extra_con
     conan_file = conan_dir/"conanfile.py"
   if not conan_file.exists():
     conan_file = conan_dir/"conanfile.txt"
-  print("Found conanfile:",conan_file)
 
   if conan_file.exists():
-    sucess(f"Using {str(conan_file)} to install dependencies with conan.")
+    success(f"Using {str(conan_file)} to install dependencies with conan.")
     conan  = ctx.obj.get('/project/commands/conan','conan')
     conan_cmd = [conan,"install",str(conan_file),"--build=missing","-s",f"build_type={build_type}"]
     conan_cmd += extra_conan_install_options
     info(f"Running: {conan_cmd}")
     result = subprocess.run(conan_cmd,cwd=build_dir)
     if result.returncode != 0:
-      return result.returncode
+      return return_or_exit(ctx,result.returncode)
 
   cmake_file = cmake_dir/"CMakeLists.txt"
   if cmake_file.exists():
@@ -255,15 +258,15 @@ def configure(ctx,release,install_prefix,extra_cmake_configure_options,extra_con
 
     info(f"Running: {cmake_cmd}")
     result = subprocess.run(cmake_cmd,cwd=build_dir)
-    return result.returncode
+    return return_or_exit(ctx,result.returncode)
 
-  return 0
+  return return_or_exit(ctx,0)
 
 @main.command()
 @click.option("--release/--debug","-R/-D",help="Build release mode or debug mode.")
 @click.option("--extra-cmake-build-options",multiple=True,help="Extra options to pass to build step.")
 @click.option("--target","-t",help="Build specific target.")
-@click.option("--run-configure/--no-run-configure","-c/-n",multiple=True,help="Run the configure command, even if project has already been configured.")
+@click.option("--run-configure/--no-run-configure","-c/-n",help="Run the configure command, even if project has already been configured.")
 @click.option("--parallel","-j",default=-1,help="Run the build command in with INTEGER parallel jobs if possible.")
 @click.pass_context
 def build(ctx,release,extra_cmake_build_options,run_configure,target,parallel):
@@ -297,7 +300,7 @@ def build(ctx,release,extra_cmake_build_options,run_configure,target,parallel):
     cmake_cmd += ['--target',target]
   cmake_cmd += extra_cmake_build_options
   result = subprocess.run(cmake_cmd,cwd=build_dir)
-  return result.returncode
+  return return_or_exit(ctx,result.returncode)
 
 
 
@@ -316,7 +319,7 @@ def test(ctx,release,match,args,skip_build,debugger):
     ret = ctx.invoke(build,release=release)
     if ret != 0:
       error(f"Build phase returned non-zero, indicating that there was an error. Skipping test phase.")
-      return ret
+      return return_or_exit(ctx,ret)
   
 
   root_dir = ctx.obj['/project/root-dir']
@@ -327,7 +330,7 @@ def test(ctx,release,match,args,skip_build,debugger):
 
   if len(tests_to_run) < 1:
     info(f"Did not find any test executables in {str(build_dir)}.")
-    return 1
+    return return_or_exit(ctx,1)
 
   # filter out duplicates
   tests_to_run = {hashlib.md5(f.read_bytes()).digest():f for f in tests_to_run}.values()
@@ -345,7 +348,7 @@ def test(ctx,release,match,args,skip_build,debugger):
       result = subprocess.run(cmd,cwd=build_dir)
       ret += abs(result.returncode)
 
-  sys.exit(ret)
+  return return_or_exit(ctx,ret)
 
 
 @main.command(help="Install a CMake project into a specified directory.")
@@ -362,7 +365,7 @@ def install(ctx,directory,tag,release):
     ret = 0
     ret += ctx.invoke(configure,release=release,install_prefix=directory)
     ret += ctx.invoke(build,release=release,extra_cmake_build_options=['--target','install'])
-    return ret
+    return return_or_exit(ctx,ret)
 
 
   with tempfile.TemporaryDirectory(suffix=".d",prefix='ccc-install') as tdir:
@@ -375,14 +378,14 @@ def install(ctx,directory,tag,release):
     res = subprocess.run(git_cmd)
     if res.returncode != 0:
       error(f"There was an error cloning repo to '{str(tdir)}'. Exiting.")
-      return 1
+      return return_or_exit(ctx,1)
     os.chdir(tdir)
     git_cmd = ['git','checkout',tag]
     res = subprocess.run(git_cmd)
     if res.returncode != 0:
       error(f"There was an error checking out '{tag}'. Does the tag exists? Exiting.")
       os.chdir(odir)
-      return 1
+      return return_or_exit(ctx,1)
 
     ctx.invoke(configure,release=release,install_prefix=directory)
     ctx.invoke(build,release=release,extra_cmake_build_options=['--target','install'])
@@ -401,14 +404,14 @@ def debug(ctx,match):
   ret = ctx.invoke(build,release=False)
   if ret != 0:
     error(f"Build phase returned non-zero, indicating that there was an error. Skipping test phase.")
-    return ret
+    return return_or_exit(ctx,ret)
 
   test_executables = get_list_of_test_executables_in_path(build_dir)
   tests_to_run = test_executables['debug']
 
   if len(tests_to_run) < 1:
     info("Did not find any test executables.")
-    return 1
+    return return_or_exit(ctx,1)
 
   rrexec = shutil.which('rr')
   kernel_perf_event_paranoid = Path('/proc/sys/kernel/perf_event_paranoid')
@@ -421,7 +424,7 @@ def debug(ctx,match):
     error(f"The kernel perf_event_paranoid setting is {kernel_perf_event_paranoid}, but it must be <= 1 to run rr.")
     warn(f"You can changes this by running:")
     warn(f"sudo bash -c 'echo 1 > /proc/sys/kernel/perf_event_paranoid'")
-    return 1
+    return return_or_exit(ctx,1)
     
 
   
@@ -435,10 +438,10 @@ def debug(ctx,match):
         error("There was a error running rr")
 
   if ret == 0:
-    sucess("All test executables were ran with `rr`. You can now debug with your tool of choice (for example `gdbgui --rr`)")
-    sucess("You can see a list of currently stored traces with `rr ls`.")
+    success("All test executables were ran with `rr`. You can now debug with your tool of choice (for example `gdbgui --rr`)")
+    success("You can see a list of currently stored traces with `rr ls`.")
 
-  return ret
+  return return_or_exit(ctx,ret)
 
 
 
@@ -452,7 +455,7 @@ def clean(ctx,all):
   except Exception as e:
     error("The clean command can only be ran from within a project directory. Could not determine project root!")
     error(str(e))
-    return 1
+    return return_or_exit(ctx,1)
 
   for build_dir in Path(".").glob("build-*"):
     info(f"Removing {str(build_dir)}.")
@@ -462,7 +465,7 @@ def clean(ctx,all):
       error(f"Could not remove {str(build_dir)}. You may be trying to delete files created by a different OS.")
 
   if not all:
-    return 0
+    return return_or_exit(ctx,0)
 
   git = ctx.obj.get('/project/commands/git','git')
   subprocess.run([git,'clean','-f', '-d'])
@@ -478,7 +481,7 @@ def info(ctx):
     root = get_project_root(Path())
   except:
     error("The info command can only be ran from within a project directory. Could not determine project root.")
-    return 1
+    return return_or_exit(ctx,1)
   project_name = get_project_name(cwd)
   build_dir_rel = get_build_dir(Path(),True)
   build_dir_deb = get_build_dir(Path(),False)
@@ -615,7 +618,7 @@ def make_conan_editable_package(ctx,conan_package_reference,conan_recipe_file,in
     conan_recipe_file = Path(conan_recipe_file).resolve()
     if not conan_recipe_file.exists():
       error(f"Conan recipe file '{str(conan_recipe_file)}' does not exist. Conan requires a valid conanfile.py file to make a package editable.")
-      return 1
+      return return_or_exit(ctx,1)
     conan_recipe_text = conan_recipe_file.read_text()
 
   if conan_recipe_text is None:
@@ -633,7 +636,7 @@ def make_conan_editable_package(ctx,conan_package_reference,conan_recipe_file,in
 
   if conan_recipe_text is None:
     error(f"Could not find a conan recipe file. Conan requires a valid conanfile.py file to make a package editable.")
-    return 1
+    return return_or_exit(ctx,1)
 
 
   ctx.obj["/project/build-dir"] = build_dir
@@ -761,7 +764,7 @@ def install_conan_recipes(ctx,url,home):
       shutil.rmtree(tdir)
     except: pass
 
-  return ret
+  return return_or_exit(ctx,ret)
 
 
 @main.command()
@@ -799,7 +802,7 @@ def get(ctx,name,remote,print_errors):
     error(f"You need to either specify a remote to use with --remote url,")
     error(f"or add a section named /project/remotes that contains a list of remote urls,")
     error(f"to one of the project configuration files.")
-    return 1
+    return return_or_exit(ctx,1)
   
   if len(remote) < 1:
     remote = ctx.obj['/project/remotes']
@@ -816,10 +819,10 @@ def get(ctx,name,remote,print_errors):
         dest = (Path('.')/name)
         if src == dest:
           error("Cannot clone/copy project into itself.")
-          return 1
+          return return_or_exit(ctx,1)
         if dest.exists():
           error("Project directory already exists. Remove it or change to a different directory.")
-          return 1
+          return return_or_exit(ctx,1)
         try:
           cmd = [git,'ls-remote',str(Path(parsed_url.path)/name)]
           output = subprocess.check_output(cmd,stderr=subprocess.STDOUT)
@@ -875,7 +878,7 @@ def ls_remote(ctx,name,remote,tags,heads,all,print_errors):
     error(f"You need to either specify a remote to use with --remote url,")
     error(f"or add a section named /project/remotes that contains a list of remote urls,")
     error(f"to one of the project configuration files.")
-    return 1
+    return return_or_exit(ctx,1)
   
   if len(remote) < 1:
     remote = ctx.obj['/project/remotes']
@@ -894,7 +897,7 @@ def ls_remote(ctx,name,remote,tags,heads,all,print_errors):
             cmd.append('--heads')
           cmd.append(str(src))
           output = subprocess.check_output(cmd,stderr=subprocess.STDOUT)
-          sucess(f"Sucess: found project at {str(src)}.")
+          success(f"Sucess: found project at {str(src)}.")
           info(output)
           if not all:
             break
@@ -925,14 +928,14 @@ def tag_for_release(ctx,tag,dirty_ok,dry_run,strict):
   tags = subprocess.check_output([git,'tag']).decode(encoding).split('\n')
   if tag in tags:
     error(f"{tag} already exists. Choose another version number.")
-    return 1
+    return return_or_exit(ctx,1)
 
   if not dirty_ok:
     output = subprocess.check_output([git,'status','--porcelain'],encoding=encoding)
     if output != "":
       error(f"The working directory is not clean. Use --dirty-ok to tag anyway. Exiting now!")
       error(output)
-      return 1
+      return return_or_exit(ctx,1)
 
   root = get_project_root(Path())
 
@@ -941,11 +944,11 @@ def tag_for_release(ctx,tag,dirty_ok,dry_run,strict):
     if strict:
       if tag != version_txt_tag:
         error(f"{tag} does not match what was found in version.txt ({version_txt_tag}). Use --no-strict to allow the version string in version.txt to only match the beginning of the new tag.")
-        sys.exit(1)
+        return return_or_exit(ctx,1)
     else:
       if not tag.startswith(version_txt_tag):
         error(f"{tag} does not begin with what was found in version.txt ({version_txt_tag}).")
-        sys.exit(1)
+        return return_or_exit(ctx,1)
 
 
 
@@ -961,7 +964,7 @@ def tag_for_release(ctx,tag,dirty_ok,dry_run,strict):
   ret = ctx.invoke(test,release=True)
   if ret != 0:
     error("Unit tests did not pass. Exiting now!")
-    return 1
+    return return_or_exit(ctx,1)
 
   hook_patterns = []
   if platform.system().lower() == "linux":
@@ -977,12 +980,12 @@ def tag_for_release(ctx,tag,dirty_ok,dry_run,strict):
       res = subprocess.run([hook])
       if res.returncode != 0:
         error(f"Pre-release hook '{str(hook)}' failed. Exiting now!")
-        return 1
+        return return_or_exit(ctx,1)
 
 
 
 
-  sucess("All tests passed. Tagging commit.")
+  success("All tests passed. Tagging commit.")
   if not dry_run:
     subprocess.run([git,'tag',tag])
 
@@ -1005,7 +1008,7 @@ def open(ctx,release):
     ret = subprocess.run([vim,str(root)])
 
 
-  return ret.returncode
+  return return_or_exit(ctx,ret.returncode)
 
 
 class parsers:
@@ -1027,7 +1030,7 @@ def filter_test_output(ctx,path_filter):
         pat,repl = filter.split("|")
         result = re.sub(pat,repl,t[0])
         t[0] = result
-      return t
+      return return_or_exit(ctx,t)
     parsers.Catch2.error_line.setParseAction( reroot_filename )
     line = parsers.Catch2.error_line.transformString(line)
     parsers.UnitTestPlusPlus.error_line.setParseAction( reroot_filename )
@@ -1039,7 +1042,7 @@ def filter_test_output(ctx,path_filter):
 
 
 
-  return 0
+  return return_or_exit(ctx,0)
 
 
 
@@ -1063,7 +1066,7 @@ def filter_test_output(ctx,path_filter):
 def error(msg):
   click.echo(click.style(msg,fg='red'))
 
-def sucess(msg):
+def success(msg):
   click.echo(click.style(msg,fg='green'))
 
 def info(msg):
