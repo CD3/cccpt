@@ -316,6 +316,15 @@ def test(ctx,release,match,args,skip_build,debugger):
   Test a Clark project by running unit tests.
   '''
   if not skip_build:
+
+    info("Looking for conanfile for tests.")
+    for dir in ['testing','tests']:
+        dir = Path(dir)
+        if (dir/'conanfile.txt').exists() or  (dir/'conanfile.py').exists():
+            ctx.obj['/project/conan-dir'] = dir.resolve()
+            info(f"Found one in {str(dir)}.")
+            break
+
     ret = ctx.invoke(build,release=release)
     if ret != 0:
       error(f"Build phase returned non-zero, indicating that there was an error. Skipping test phase.")
@@ -918,10 +927,11 @@ def ls_remote(ctx,name,remote,tags,heads,all,print_errors):
 @main.command(help="Tag current commit for release after running unit tests and any pre-release test scripts.")
 @click.argument("tag")
 @click.option("--dirty-ok","-d",is_flag=True,help="Don't error out if working directory is not clean.")
+@click.option("--bump-version","-b",is_flag=True,help="Update the version number in special files like `version.txt` automatically.")
 @click.option("--dry-run","-n",is_flag=True,help="Don't actually tag, just run checks.")
 @click.option("--strict/--no-strict",default=True,help="Do strict checking before tagging.")
 @click.pass_context
-def tag_for_release(ctx,tag,dirty_ok,dry_run,strict):
+def tag_for_release(ctx,tag,dirty_ok,dry_run,strict,bump_version):
 
 
   git = ctx.obj.get('/project/commands/git','git')
@@ -940,15 +950,20 @@ def tag_for_release(ctx,tag,dirty_ok,dry_run,strict):
   root = get_project_root(Path())
 
   if (root/"version.txt").is_file():
-    version_txt_tag = (root/"version.txt").read_text().strip()
-    if strict:
-      if tag != version_txt_tag:
-        error(f"{tag} does not match what was found in version.txt ({version_txt_tag}). Use --no-strict to allow the version string in version.txt to only match the beginning of the new tag.")
-        return return_or_exit(ctx,1)
+    if bump_version:
+        (root/"version.txt").write_text(tag)
+        subprocess.run([git,'add',root/"version.txt"])
+        subprocess.run([git,'commit','-m','version bump'])
     else:
-      if not tag.startswith(version_txt_tag):
-        error(f"{tag} does not begin with what was found in version.txt ({version_txt_tag}).")
-        return return_or_exit(ctx,1)
+        version_txt_tag = (root/"version.txt").read_text().strip()
+        if strict:
+          if tag != version_txt_tag:
+            error(f"{tag} does not match what was found in version.txt ({version_txt_tag}). Use --no-strict to allow the version string in version.txt to only match the beginning of the new tag.")
+            return return_or_exit(ctx,1)
+        else:
+          if not tag.startswith(version_txt_tag):
+            error(f"{tag} does not begin with what was found in version.txt ({version_txt_tag}).")
+            return return_or_exit(ctx,1)
 
 
 
