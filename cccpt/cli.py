@@ -256,6 +256,13 @@ def configure(ctx,release,install_prefix,extra_cmake_configure_options,extra_con
     load_conan_buildinfo(build_dir)
     load_conan_environment(build_dir)
 
+    if (Path(build_dir)/"rhd_conan_toolchain.cmake").exists():
+        cmake_cmd.append(f"-DCMAKE_TOOLCHAIN_FILE='{str(build_dir)}/rhd_conan_toolchain.cmake'")
+    if (Path(build_dir)/"conan_toolchain.cmake").exists():
+        cmake_cmd.append(f"-DCMAKE_TOOLCHAIN_FILE='{str(build_dir)}/conan_toolchain.cmake'")
+
+    cmake_cmd.append("-DUNIT_TESTS=ON")
+
     info(f"Running: {cmake_cmd}")
     result = subprocess.run(cmake_cmd,cwd=build_dir)
     return return_or_exit(ctx,result.returncode)
@@ -400,6 +407,15 @@ def install(ctx,directory,tag,release):
     ctx.invoke(build,release=release,extra_cmake_build_options=['--target','install'])
 
     os.chdir(odir)
+
+@main.command(help="Setup special files for the CMake, the code completer, etc.")
+@click.pass_context
+def setup_special_files(ctx):
+    root_dir = ctx.obj['/project/root-dir']
+    build_dir = ctx.obj.get("/project/build-dir",get_build_dir(Path(),False,root_dir))
+
+    (root_dir/'CMakePresets.json').symlink_to(build_dir/'CMakePresets.json')
+    (root_dir/'compile_commands.json').symlink_to(build_dir/'compile_commands.json')
 
 
 @main.command(help="Debug a Clark project unit tests.")
@@ -1061,6 +1077,23 @@ def filter_test_output(ctx,path_filter):
 
 
 
+@main.command(help="Create a link to compiler_commands.json in project root so that code completers will work.")
+@click.pass_context
+def link_compiler_commands(ctx):
+    root = get_project_root(Path())
+    files = list(root.glob("**/compile_commands.json"))
+    if len(files) == 0:
+        error("No 'compiile_commands.json' files found.")
+        sys.exit(1)
+    times = [ file.stat().st_mtime for file in files]
+    file_to_link = sorted(zip(times,files),reverse=True)[0][1]
+    link_to_create = root/'compile_commands.json'
+    if link_to_create.is_symlink():
+        link_to_create.unlink()
+    link_to_create.symlink_to(file_to_link)
+
+    sys.exit(0)
+
 
 
 
@@ -1138,9 +1171,9 @@ def is_debug(path):
 def get_list_of_test_executables_in_path(path, patterns=None):
   if patterns is None:
     if platform.system().lower() == "linux":
-      patterns = ["*Tests*", "*Tester*", "*unitTest*"]
+      patterns = ["*Tests*", "*Tester*", "*unitTest*", "*unit_tests*"]
     if platform.system().lower() == "windows":
-      patterns = ["*Tests*.exe", "*Tester*.exe", "*unitTest*.exe"]
+      patterns = ["*Tests*.exe", "*Tester*.exe", "*unitTest*.exe", "*unit_tests*.exe"]
 
 
   executables = []
@@ -1191,11 +1224,6 @@ def find_files_above(path,pattern,max_height = None):
 
 def rmtree(dir):
   # shutil.rmtree(...) does not work on Windows all the time.
-  # for file in path.glob('**'):
-  #   if file.is_file():
-  #     print(file)
-  #   else:
-  #     print(file)
   def del_rw(func,path,_):
     '''
     Clear the readonly bit on path and try to remove it.
@@ -1254,7 +1282,6 @@ def load_conan_environment(path):
     files_to_load.append(path)
 
   for file in files_to_load:
-    vars = configparser
     env = configparser.ConfigParser(allow_no_value=True,interpolation=None,delimiters=('=',))
     env.optionxform=str # don't convert keys to lowercase
     text = '[ENV]\n' + file.read_text()
