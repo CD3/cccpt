@@ -1,5 +1,7 @@
 # Clark's Conan, CMake, C++ Project Tools
 
+**This project has been deprecated by a rewrite [https://github.com/CD3/conan_cmake_cpp_project_tools](https://github.com/CD3/conan_cmake_cpp_project_tools)**
+
 This project started out as a collection of small scripts to automate the configure, build, and testing steps of
 C++ projects I work on. It has since grown to include several small utilities that I have found useful while
 working on C++ projects.
